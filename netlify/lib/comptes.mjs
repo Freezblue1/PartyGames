@@ -22,7 +22,7 @@ import { promisify } from "node:util";
 const scrypt = promisify(scryptCb);
 
 export const PROJECT = "qui-de-nous-7244f";
-const DOCS = `https://firestore.googleapis.com/v1/projects/${PROJECT}/databases/(default)/documents`;
+const PROD_DOCS = `https://firestore.googleapis.com/v1/projects/${PROJECT}/databases/(default)/documents`;
 const MAX_FAILS = 10, LOCK_MS = 15 * 60 * 1000;
 const IP_MAX = 20, IP_WINDOW_MS = 24 * 3600 * 1000;
 const DEVICE_RE = /^[A-Za-z0-9-]{16,64}$/;
@@ -83,9 +83,12 @@ const enc = v => typeof v === "number" ? { integerValue: String(Math.trunc(v)) }
 const encFields = o => Object.fromEntries(Object.entries(o).map(([k, v]) => [k, enc(v)]));
 const dec = f => Object.fromEntries(Object.entries(f || {}).map(([k, v]) => [k, "integerValue" in v ? Number(v.integerValue) : v.stringValue]));
 
-function store(cred, fetch) {
+// FIRESTORE_EMULATOR_HOST (tests only, never set on Netlify): talk to the local emulator, which trusts the "owner" token.
+function store(cred, fetch, env = {}) {
+  const emu = env.FIRESTORE_EMULATOR_HOST;
+  const DOCS = emu ? `http://${emu}/v1/projects/${PROJECT}/databases/(default)/documents` : PROD_DOCS;
   const call = async (url, init = {}) => {
-    const token = await accessToken(cred, fetch);
+    const token = emu ? "owner" : await accessToken(cred, fetch);
     return fetch(url, { ...init, headers: { authorization: "Bearer " + token, "content-type": "application/json", ...init.headers } });
   };
   return {
@@ -211,7 +214,7 @@ export async function signup(body, ip, { env, fetch, now = Date.now() }) {
   if (!DEVICE_RE.test(device)) throw fail(400, "Ton navigateur n'arrive pas à se souvenir de ce téléphone. Quitte la navigation privée et réessaie.");
   if (!ip) throw fail(400, "Impossible de reconnaître ta connexion.");
   if (isAdminPseudo(env, pseudo)) throw fail(409, "Ce pseudo est réservé.");
-  const cred = credentials(env), db = store(cred, fetch);
+  const cred = credentials(env), db = store(cred, fetch, env);
   const deviceDoc = "accountDevices/" + sha256("device:" + device), ipDoc = "accountIps/" + ipId(ip, cred);
 
   const [taken, phone, net] = await Promise.all([db.get("accounts/" + id), db.get(deviceDoc), db.read(ipDoc)]);
@@ -236,7 +239,7 @@ export async function signup(body, ip, { env, fetch, now = Date.now() }) {
 export async function login(body, { env, fetch, now = Date.now() }) {
   const { pseudo, pass, id } = readInput(body);
   if (!pseudo || !pass) throw fail(400, "Entre ton pseudo et ton mot de passe.");
-  const cred = credentials(env), db = store(cred, fetch);
+  const cred = credentials(env), db = store(cred, fetch, env);
   const acct = await db.get("accounts/" + id);
   const wrong = fail(401, "Pseudo ou mot de passe incorrect.");
   if (!acct) throw wrong;
@@ -255,7 +258,7 @@ export async function login(body, { env, fetch, now = Date.now() }) {
 export async function admin(body, { env, fetch, now = Date.now() }) {
   const who = await verifyIdToken(body?.idToken, { fetch, now });
   if (!who.admin || !isAdminPseudo(env, who.pseudo)) throw fail(403, "Réservé à l'admin.");
-  const cred = credentials(env), db = store(cred, fetch);
+  const cred = credentials(env), db = store(cred, fetch, env);
   const target = () => {
     const { pseudo, id } = readInput(body);
     if (!pseudo) throw fail(400, "Quel compte ?");

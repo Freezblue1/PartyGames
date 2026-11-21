@@ -15,3 +15,10 @@ desktop.ini
 # Firebase service account keys: they go in Netlify environment variables, never in the repo
 *firebase-adminsdk*.json
 *service-account*.json
+
+# Test outputs and local tools
+tests/test-results/
+tests/playwright-report/
+tests/.jdk/
+*.log
+tests/firestore.rules

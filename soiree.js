@@ -32,13 +32,24 @@ function firebase() {
     const [appMod, authMod, fsMod] = await Promise.all([import(FB + "firebase-app.js"), import(FB + "firebase-auth.js"), import(FB + "firebase-firestore.js")]);
     const app = appMod.getApps()[0] || appMod.initializeApp(firebaseConfig);
     A = authMod; auth = A.getAuth(app); Fs = fsMod; fs = Fs.getFirestore(app);
+    useEmulators(A, auth, Fs, fs);
     await auth.authStateReady();
   })();
+}
+
+// Tests only (tests/e2e): the test sets window.SOIREE_EMULATORS before the page loads, so the page
+// talks to the local Firebase emulators instead of the real project. Games call this right after getAuth/getFirestore.
+const EMU = window.SOIREE_EMULATORS || null, wired = new WeakSet();
+export function useEmulators(authMod, a, fsMod, db) {
+  if (!EMU) return;
+  if (!wired.has(a)) { wired.add(a); authMod.connectAuthEmulator(a, EMU.auth, { disableWarnings: true }); }
+  if (!wired.has(db)) { wired.add(db); fsMod.connectFirestoreEmulator(db, EMU.host, EMU.firestorePort); }
 }
 const ref = (...p) => Fs.doc(fs, ...p);
 
 /* ---------- account ---------- */
 let account = null;            // { uid, pseudo, admin, color, party }
+let accountReady = null;       // the first load of the account, awaited before the account window draws
 export let replaying = false;  // true while a saved game is being replayed: games then write nothing
 export const pseudo = () => account?.pseudo || "";
 export const color = () => account?.color || null;
@@ -267,6 +278,7 @@ async function onAccountSubmit(e) {
 export async function openAccount(tab) {
   ensureCss();
   await firebase();
+  await accountReady?.catch(() => null);  // opened right after the page loads: wait to know who is signed in
   if (!dlg) {
     dlg = document.createElement("dialog");
     dlg.className = "so-sheet";
@@ -464,7 +476,8 @@ export async function mountHub() {
     try { await joinParty(partyEl.querySelector("#so-party-code").value); invitedTo = ""; } catch (err) { partyErr = err.message; }
     drawParty();
   });
-  try { await firebase(); await loadAccount(); } catch {}
+  accountReady = firebase().then(loadAccount);
+  try { await accountReady; } catch {}
   drawHubButton(); drawParty(); watchParty();
   if (invitedTo && !account) openAccount();
 }
@@ -474,7 +487,8 @@ export async function mountHub() {
 export async function start() {
   ensureCss();
   await firebase();
-  await loadAccount().catch(() => null);
+  accountReady = loadAccount();
+  await accountReady.catch(() => null);
   const nav = document.querySelector(".hub-back");
   if (nav && !nav.querySelector(".so-acct")) {
     nav.insertAdjacentHTML("beforeend", `<button class="so-acct" type="button" hidden>${account ? "👤 " + esc(account.pseudo) : "Se connecter"}</button>`);
@@ -557,7 +571,9 @@ export function frame(M) {
   if (replaying) return;
   lastM = M;
   decorate(M);
-  if (M.mode === "room" && !M.tv && M.code) { clearTimeout(recT); recT = setTimeout(() => capture(M), 120); }
+  // At most one capture every 150 ms, and always one: games re-render many times a second during play,
+  // so waiting for a quiet moment would never record anything.
+  if (M.mode === "room" && !M.tv && M.code && !recT) recT = setTimeout(() => { recT = null; capture(lastM); }, 150);
   drawSaveBar(M);
 }
 

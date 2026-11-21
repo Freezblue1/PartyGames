@@ -10,9 +10,9 @@ service cloud.firestore {
 
     function signedIn() { return request.auth != null; }
     // Un compte (pseudo + mot de passe) : son pseudo est dans le jeton, posé par le serveur des comptes.
-    function hasAccount() { return request.auth != null && request.auth.token.pseudo is string; }
+    function hasAccount() { return request.auth != null && request.auth.token.get('pseudo', null) is string; }
     // L'admin (pseudo listé dans ADMIN_PSEUDO sur Netlify) : jeton marqué admin par le serveur des comptes.
-    function isAdmin() { return request.auth != null && request.auth.token.admin == true; }
+    function isAdmin() { return request.auth != null && request.auth.token.get('admin', false) == true; }
     function isColor(c) { return c is string && c.matches('^#[0-9A-Fa-f]{6}$'); }
 
     /* ===================== Admin : tous les droits, sur tout ===================== */

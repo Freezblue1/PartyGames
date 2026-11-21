@@ -157,6 +157,7 @@ async function loadFirebase() {
   const fbApp = appMod.getApps()[0] || appMod.initializeApp(firebaseConfig);
   AUTH = authMod.getAuth(fbApp);
   DB = fsMod.getFirestore(fbApp);
+  Soiree.useEmulators(authMod, AUTH, fsMod, DB);
   F = { ...fsMod, signInAnonymously: authMod.signInAnonymously };
 }
 const rRoom = code => F.doc(DB, "rooms", code);

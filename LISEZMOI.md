@@ -131,6 +131,26 @@ Les jeux marchent, mais pas les comptes : ils ont besoin de la fonction Netlify,
 En local seulement, la console du navigateur a `window.soireeDev` : `recording()` donne l'enregistrement de la partie en cours,
 et une partie mise dans `sessionStorage["soiree-dev-replay"]` se rejoue avec `?revoir=local` dans l'adresse du jeu.
 
+## Tests automatiques (dossier `tests`)
+
+Ils tournent sur l'ordi, avec les **émulateurs Firebase** : rien ne touche au vrai projet ni aux vrais comptes.
+
+| Commande (dans `tests`) | Ce qui est vérifié | Durée |
+|---|---|---|
+| `npm run test:server` | Le serveur des comptes : inscription, un compte par téléphone, plafond anti-robot, connexion, blocage, admin | quelques secondes |
+| `npm run test:rules` | `firestore.rules` se charge sans erreur, et : un membre ne peut pas piloter le groupe d'un autre, personne ne lit les sauvegardes d'un autre, les données des comptes sont fermées, l'admin peut tout | ~20 s |
+| `npm run test:e2e` | Deux joueurs dans deux navigateurs séparés (Edge) : comptes, groupe, le membre suit le chef dans sa partie, une vraie partie de Qui de nous jusqu'au palmarès, sauvegarde « Partie entière » et « Résultat », « Revoir » coup par coup | ~1 min |
+| `npm test` | Les trois, dans l'ordre | |
+
+Première fois : `cd tests` puis `npm install`. Les émulateurs ont besoin de Java 21 : s'il n'est pas installé,
+mets un JDK dans `tests/.jdk` (ex. le zip Temurin 21 de https://adoptium.net, décompressé là) ; `with-emulators.mjs` l'utilise tout seul.
+
+**Avant de publier de nouvelles règles** dans la console Firebase, lance `npm run test:rules` : une faute de frappe
+apparaît là, avec le message de Firebase, au lieu de casser les jeux en ligne.
+
+Si un test e2e échoue, la capture d'écran et la trace sont dans `tests/test-results`
+(`npx playwright show-trace tests/test-results/…/trace.zip` pour la rejouer).
+
 ## Ajouter un jeu
 
 1. Crée son dossier à la racine (ex. `mon-jeu/`), avec des chemins relatifs (`style.css`, `app.js`…).
