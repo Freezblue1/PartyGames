@@ -16,6 +16,8 @@ Personne n'a besoin de créer de compte pour jouer. Les jetons sont pour de faux
 | `manifest.webmanifest`, `sw.js`, `icon-*.png` | Ce qui permet d'installer le jeu comme une appli |
 
 > Mise en ligne et règles Firebase : voir le [LISEZMOI à la racine](../LISEZMOI.md).
+> Compte, couleur, groupes, sauvegardes et « Revoir » : communs à tous les jeux, voir aussi le LISEZMOI à la racine.
+> Connecté, tu joues sous ton pseudo de compte et ta couleur choisie dans « Mon compte ».
 
 ## Jouer
 
@@ -35,7 +37,7 @@ Personne n'a besoin de créer de compte pour jouer. Les jetons sont pour de faux
 - À la fin : le classement, un **titre** pour chacun (Requin, Main en or, Bad beat, Le Roc, Kamikaze, Phénix…), le détail de sa partie, et un bouton pour **partager le classement en image** avec le coup de la soirée.
 - **Grand écran** : dans « Code de la partie », le modo trouve un lien à ouvrir sur une TV ou un ordi. Il montre le tapis, les mises et l'abattage, jamais les cartes cachées.
 - **Passer la main** : le modo peut donner son rôle à quelqu'un d'autre, même en pleine partie. S'il perd la connexion plus d'une minute, les autres peuvent **devenir le modo** et la partie continue.
-- **Mon profil** (sur l'accueil) : ta couleur, et tes stats gardées sur ton téléphone (parties, victoires, pots gagnés, plus gros pot, plus belle main, titre fétiche).
+- **Mon profil** (sur l'accueil du jeu) : tes stats gardées sur ton téléphone (parties, victoires, pots gagnés, plus gros pot, plus belle main, titre fétiche).
 - **Installer l'appli** : bouton sur l'accueil (Android), ou Partager › « Sur l'écran d'accueil » (iPhone).
 - Les parties créées sur ton téléphone et inutilisées depuis 24 h sont supprimées toutes seules de Firebase.
 - Pas de réseau ? **Jouer à plusieurs sur un seul téléphone** : le téléphone passe de main en main, chacun regarde ses cartes à son tour.

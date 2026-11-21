@@ -17,6 +17,8 @@ Pas besoin de Firebase Storage (qui demande maintenant le forfait payant) : le f
 | `config.js` | La config Firebase (déjà remplie, la même que les autres jeux) |
 
 > Mise en ligne et règles Firebase : voir le [LISEZMOI à la racine](../LISEZMOI.md).
+> Compte, couleur, groupes, sauvegardes et « Revoir » : communs à tous les jeux, voir aussi le LISEZMOI à la racine.
+> Connecté, tu joues sous ton pseudo de compte et ta couleur choisie dans « Mon compte ».
 
 ## Jouer
 

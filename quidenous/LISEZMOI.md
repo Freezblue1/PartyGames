@@ -24,6 +24,8 @@ Grand écran : le modo trouve dans « Code de la partie » un lien qui finit par
 Ouvert sur une TV ou un ordi, il montre la partie sans y jouer.
 
 > Mise en ligne et règles Firebase : voir le [LISEZMOI à la racine](../LISEZMOI.md).
+> Compte, couleur, groupes, sauvegardes et « Revoir » : communs à tous les jeux, voir aussi le LISEZMOI à la racine.
+> Connecté, tu joues sous ton pseudo de compte et ta couleur choisie dans « Mon compte ».
 
 ## Jouer
 

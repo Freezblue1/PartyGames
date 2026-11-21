@@ -23,7 +23,8 @@ Chaque dossier a son propre `LISEZMOI.md` qui explique le jeu (fichiers, déroul
 | Fichier | Rôle |
 |---|---|
 | `index.html`, `style.css` | La page d'accueil |
-| `compte.js`, `config.js` | Le bouton « Se connecter » de l'accueil et la config Firebase qu'il utilise |
+| `soiree.js`, `soiree.css` | Commun à l'accueil et aux 9 jeux : fenêtre « Mon compte », groupes, enregistrement et sauvegarde des parties, lecteur « Revoir », espace admin |
+| `config.js` | La config Firebase utilisée par `soiree.js` (la même que celle des jeux) |
 | `netlify/functions/compte.mjs`, `netlify/lib/comptes.mjs` | Le serveur des comptes (fonction Netlify, aucune dépendance à installer) |
 | `firestore.rules` | Les règles de sécurité **de tous les jeux**, à coller dans la console Firebase |
 | `netlify.toml` | Dit à Netlify de publier ce dossier tel quel (pas de build) et où trouver la fonction des comptes |
@@ -56,8 +57,8 @@ Les jeux installés comme appli sur les téléphones prennent la nouvelle versio
 
 ## 3. Activer les comptes (une seule fois)
 
-Sur l'accueil, chacun peut créer un compte avec un **pseudo** et un **mot de passe**, sans e-mail.
-Connecté, ton pseudo est proposé tout seul dans tous les jeux, sur tous tes appareils. Sans compte, on joue comme avant.
+Sur l'accueil, ou sur la page d'accueil de chaque jeu (bouton en haut à droite), chacun peut créer un compte
+avec un **pseudo** et un **mot de passe**, sans e-mail. Sans compte, on joue comme avant, en tapant son prénom.
 
 Le serveur des comptes a besoin d'une clé du projet Firebase :
 
@@ -86,9 +87,38 @@ Tant que ce n'est pas fait, le bouton répond « Les comptes ne sont pas encore 
 - **Anti-robot** : au plus 20 comptes créés par connexion internet en 24 h (assez pour toute une soirée sur le même Wi-Fi).
   Sans ça, un script pourrait inventer un nouvel identifiant à chaque fois. L'IP n'est pas stockée, seulement une empreinte.
 - Après 10 mots de passe faux d'affilée, le compte est bloqué 15 minutes.
-- Mot de passe oublié : il n'y a pas d'e-mail pour le récupérer. Dans Firestore, collection `accounts`, supprime le document
-  dont le champ `pseudo` correspond, et dans `accountDevices` celui dont le champ `account` porte ce pseudo :
-  la personne pourra recréer son compte depuis le même téléphone.
+- Mot de passe oublié : il n'y a pas d'e-mail pour le récupérer. L'admin lui donne un nouveau mot de passe (voir plus bas).
+
+## 4. Ce que fait un compte
+
+- **Ton nom dans les jeux** : connecté, tu rejoins chaque partie sous ton pseudo, sans le retaper ni pouvoir le changer.
+- **Ta couleur** : elle se choisit seulement dans « Mon compte » › Profil, et s'applique aux parties que tu rejoins ensuite.
+- **Les groupes** (accueil, « Jouer en groupe ») : crée un groupe et partage son code. Quand le chef du groupe entre
+  dans une partie (il la crée, ou rejoint celle de quelqu'un), le téléphone de chaque membre ouvre ce jeu et rejoint
+  la même partie tout seul. Le groupe n'est pas dissous à la fin d'une partie : on y reste d'une partie à l'autre,
+  et quelqu'un qui part peut revenir avec le même code. Le chef peut retirer un membre ou dissoudre le groupe.
+  Il faut un compte pour être dans un groupe.
+- **Sauvegardes** : à la fin d'une partie, une barre propose de garder **la partie entière** (pour la revoir coup par coup)
+  ou **le résultat** (l'écran de fin). On les retrouve dans « Mon compte » › Sauvegardes.
+- **Revoir** : la partie se rejoue dans le jeu lui-même, exactement comme ton téléphone l'a vue (tes cartes, ton mot, tes votes),
+  avec lecture, pause, coup par coup et une barre pour avancer. Rien ne peut être touché pendant la lecture.
+  Chaque téléphone enregistre ce qu'il voit, donc on ne voit jamais les secrets des autres.
+  Photo Roulette : les photos ne sont pas gardées (elles sont effacées du serveur à la fin de chaque partie).
+  L'enregistrement est en mémoire : si tu recharges la page en pleine partie, il repart de ce moment-là.
+
+## 5. Admin
+
+L'admin a tous les droits : il voit tous les comptes créés depuis le début (même ceux supprimés), leurs sauvegardes,
+peut donner un nouveau mot de passe, supprimer un compte, et lire ou modifier toutes les données des jeux.
+
+1. Crée d'abord ton compte normalement sur le site (ex. `Freezblue`).
+2. Netlify › **Environment variables** › ajoute `ADMIN_PSEUDO` = ton pseudo (plusieurs admins : séparés par des virgules).
+3. **Deploys › Trigger deploy**, puis déconnecte-toi et reconnecte-toi : l'onglet **Admin** apparaît dans « Mon compte ».
+
+Un pseudo listé dans `ADMIN_PSEUDO` ne peut plus être créé par inscription : c'est pour ça que le compte se crée avant.
+Pour retirer un admin, enlève son pseudo de `ADMIN_PSEUDO` et redéploie : les actions de l'onglet Admin sont refusées tout de suite, ses droits
+sur les données disparaissent à sa prochaine déconnexion.
+Supprimer un compte libère son pseudo et son téléphone ; il reste dans la liste, marqué « Supprimé ».
 
 ## Tester en local
 
@@ -98,11 +128,15 @@ python -m http.server 5518
 
 Puis ouvre http://localhost:5518. `localhost` est déjà autorisé dans Firebase.
 Les jeux marchent, mais pas les comptes : ils ont besoin de la fonction Netlify, qui ne tourne que sur le site en ligne.
+En local seulement, la console du navigateur a `window.soireeDev` : `recording()` donne l'enregistrement de la partie en cours,
+et une partie mise dans `sessionStorage["soiree-dev-replay"]` se rejoue avec `?revoir=local` dans l'adresse du jeu.
 
 ## Ajouter un jeu
 
 1. Crée son dossier à la racine (ex. `mon-jeu/`), avec des chemins relatifs (`style.css`, `app.js`…).
-2. Lien de retour vers l'accueil : `<a href="../">← Tous nos jeux</a>`.
+2. Lien de retour vers l'accueil : `<nav class="hub-back"><a href="../">← Tous nos jeux</a></nav>` (le bouton du compte s'y ajoute).
+   Branche `soiree.js` comme dans les autres jeux : `import * as Soiree from "../soiree.js"`, puis cherche `Soiree.` dans
+   un `app.js` existant (démarrage, `enterRoom`, `joinRoom`, `needNick`, `store.set`, et l'enveloppe de `render` avant `boot()`).
 3. Si le jeu a un `sw.js`, donne à son cache un préfixe unique (ex. `mj-v1`) : tous les jeux partagent la même adresse.
    Pareil pour les clés `localStorage` (chaque jeu a son préfixe : `qdn`, `uc`, `lg`, `pr`, `bmc`, `pdo`, `qsj`, `pkr`, `kms`).
 4. Ajoute ses règles à `firestore.rules` (nouvelle collection), puis recolle le fichier dans Firebase.

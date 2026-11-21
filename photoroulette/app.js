@@ -1,4 +1,5 @@
 import { firebaseConfig } from "./config.js";
+import * as Soiree from "../soiree.js";
 
 const FB = "https://www.gstatic.com/firebasejs/10.12.2/";
 const C = "prRooms";
@@ -75,7 +76,7 @@ const normCode = c => String(c || "").toUpperCase().replace(/[^A-Z0-9]/g, "").sl
 const hashCode = () => { const c = normCode(location.hash.slice(1)); return c.length === 4 ? c : ""; };
 const store = {
   get(k) { try { return localStorage.getItem(K + "-" + k); } catch { return null; } },
-  set(k, v) { try { v == null ? localStorage.removeItem(K + "-" + k) : localStorage.setItem(K + "-" + k, v); } catch {} }
+  set(k, v) { if (Soiree.replaying) return; try { v == null ? localStorage.removeItem(K + "-" + k) : localStorage.setItem(K + "-" + k, v); } catch {} }
 };
 const names = list => {
   const ns = list.map(p => p.nick);
@@ -108,7 +109,7 @@ async function loadFirebase() {
   const [appMod, authMod, fsMod] = await Promise.all([
     import(FB + "firebase-app.js"), import(FB + "firebase-auth.js"), import(FB + "firebase-firestore.js")
   ]);
-  const fbApp = appMod.initializeApp(firebaseConfig);
+  const fbApp = appMod.getApps()[0] || appMod.initializeApp(firebaseConfig);
   AUTH = authMod.getAuth(fbApp);
   DB = fsMod.getFirestore(fbApp);
   F = { ...fsMod, signInAnonymously: authMod.signInAnonymously };
@@ -140,6 +141,7 @@ function subVotes() {
   }, onErr);
 }
 function enterRoom(code) {
+  Soiree.roomEntered(code);
   leaveSubs();
   resetPics();
   Object.assign(M, { mode: "room", code, room: null, roomReady: false, players: [], playersReady: false, votes: [], pending: null, renaming: false, mine: [], mineGame: null, showMine: false });
@@ -188,7 +190,7 @@ async function joinRoom(code, nick) {
   const mine = ps.docs.find(d => d.id === M.me);
   if (mine) { await F.updateDoc(rPlayer(code, M.me), { nick }); return; }
   const used = new Set(ps.docs.map(d => d.data().color));
-  const color = COLORS.find(c => !used.has(c)) || COLORS[ps.size % COLORS.length];
+  const fav = Soiree.color(), color = fav && !used.has(fav) ? fav : COLORS.find(c => !used.has(c)) || COLORS[ps.size % COLORS.length];
   await F.setDoc(rPlayer(code, M.me), { nick, color, joinedAt: Date.now() });
 }
 const freshGame = () => ({ gameId: rid(), phase: "lobby", round: 0, step: "guess", deck: [], order: [], cast: {}, shown: [], answers: {}, gains: {}, roundAt: null });
@@ -574,6 +576,7 @@ async function endGame() {
 }
 let duty = false, dutyWait = 0, allKey = "", allSince = 0;
 async function hostDuty() {
+  if (Soiree.replaying) return;  // a replay never writes
   const r = M.room;
   if (!isMod() || duty || !r || r.phase !== "play" || Date.now() < dutyWait) return;
   const key = "r" + r.round;
@@ -993,6 +996,7 @@ function render() {
   keepAwake((M.mode === "room" && r?.phase === "play" && inRoom()) || !!M.up || !!M.picking);
 }
 function ticks() {
+  if (Soiree.replaying) return;  // a replay never writes
   const now = Date.now();
   app.querySelectorAll(".timer[data-end]").forEach(t => {
     const left = Math.max(0, +t.dataset.end - now), dur = +t.dataset.dur || 1;
@@ -1042,7 +1046,7 @@ async function write(fn) {
   M.busy = false; render();
 }
 const needNick = () => {
-  const nick = (M.drafts.nick || "").trim().slice(0, 18);
+  const nick = (Soiree.pseudo() || M.drafts.nick || "").trim().slice(0, 18);
   if (!nick) { M.err = "Entre d'abord ton prénom."; render(); document.getElementById("nick")?.focus(); return ""; }
   store.set("nick", nick);
   return nick;
@@ -1060,7 +1064,7 @@ const ACT = {
         if (e && e.code === "permission-denied") throw new Error("les règles Firebase de Photo Roulette ne sont pas encore publiées, voir LISEZMOI");
         throw e;
       }
-      await F.setDoc(rPlayer(code, M.me), { nick, color: COLORS[0], joinedAt: Date.now(), mod: true });
+      await F.setDoc(rPlayer(code, M.me), { nick, color: Soiree.color() || COLORS[0], joinedAt: Date.now(), mod: true });
       enterRoom(code);
     });
   },
@@ -1263,6 +1267,7 @@ window.addEventListener("hashchange", () => {
 /* ---------- boot ---------- */
 const isPlaceholder = () => !firebaseConfig.apiKey || /COLLE/.test(firebaseConfig.apiKey);
 async function boot() {
+  if (await Soiree.replayBoot(M, render)) return;
   if (FSA) idb("readonly", st => st.get("list")).then(l => { if (Array.isArray(l)) { M.savedDirs = l; render(); } }, () => {});
   if (isPlaceholder()) { M.mode = "setup"; render(); return; }
   render();
@@ -1273,7 +1278,8 @@ async function boot() {
     await AUTH.authStateReady();
     const u = AUTH.currentUser || (await F.signInAnonymously(AUTH)).user;
     M.me = u.uid;
-    if (!u.isAnonymous && !M.drafts.nick) M.drafts.nick = String((await u.getIdTokenResult().catch(() => null))?.claims.pseudo || "").slice(0, 18);
+    await Soiree.start().catch(() => null);
+    if (Soiree.pseudo()) M.drafts.nick = Soiree.pseudo();
   }
   catch (e) {
     M.mode = "fatal";
@@ -1283,6 +1289,14 @@ async function boot() {
     render(); return;
   }
   // Retour dans la partie après un rechargement, ou directement quand le lien porte un code déjà rejoint.
+  // Sent here by the group: join the host's room straight away, under the account name.
+  const auto = Soiree.autoJoinCode();
+  if (auto && auto === hashCode()) {
+    try {
+      const r = await F.getDoc(rRoom(auto));
+      if (r.exists()) { await joinRoom(auto, Soiree.pseudo(), r.data().hostUid); enterRoom(auto); return; }
+    } catch {}
+  }
   const target = hashCode() || store.get("room");
   if (target) {
     try {
@@ -1293,4 +1307,6 @@ async function boot() {
   }
   M.mode = "home"; render();
 }
+// Shared layer (account button, own name, group, recording for replays): after every render.
+{ const draw = render; render = () => { draw(); Soiree.frame(M); }; }
 boot();

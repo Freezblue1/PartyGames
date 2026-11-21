@@ -1,0 +1,98 @@
+/* Shared account window, group panel, end-of-game save bar and replay controls.
+   Built on each page's own tokens (--ink, --card, --accent…), so it wears the colours of the game it opens in. */
+.so-sheet,.so-bar,.so-panel,#party,.hub-back .so-acct{
+  --so-ink:var(--ink,#17181C); --so-ink-2:var(--ink-2,var(--ink,#555)); --so-card:var(--card,#FFFBF3); --so-card-2:var(--card-2,#EFE5D2);
+  --so-accent:var(--accent,#D93A26); --so-on-accent:var(--on-accent,#fff); --so-shadow:var(--shadow,#17181C);
+  --so-display:var(--display,"Arial Black",sans-serif); --so-body:var(--body,system-ui,sans-serif);
+  font-family:var(--so-body); color:var(--so-ink)
+}
+.so-sheet [hidden],.so-bar[hidden],.so-accts li[hidden]{display:none!important}
+
+/* buttons, fields */
+.so-btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;font:800 16px/1.15 var(--so-body);border:2.5px solid var(--so-ink);border-radius:14px;padding:12px 16px;min-height:48px;background:var(--so-card);color:var(--so-ink);box-shadow:3px 3px 0 var(--so-shadow);cursor:pointer;text-decoration:none;transition:transform .08s,box-shadow .08s}
+.so-btn:active:not(:disabled){transform:translate(3px,3px);box-shadow:0 0 0 var(--so-shadow)}
+.so-btn:disabled{opacity:.6;cursor:default}
+.so-primary{background:var(--so-accent);color:var(--so-on-accent)}
+.so-big{width:100%;font-size:18px;min-height:56px}
+.so-sm{font-size:14px;padding:8px 11px;min-height:40px;border-width:2px;border-radius:11px;box-shadow:2px 2px 0 var(--so-shadow)}
+.so-ghost{background:transparent;box-shadow:none}
+.so-danger{color:var(--so-accent)}
+.so-link{background:none;border:0;padding:6px 0;font:700 15px var(--so-body);color:var(--so-ink);text-decoration:underline;text-underline-offset:3px;cursor:pointer;align-self:flex-start}
+.so-x{width:40px;height:40px;flex:none;border:2px solid var(--so-ink);border-radius:50%;background:var(--so-card-2);color:var(--so-ink);font:700 22px/1 var(--so-body);cursor:pointer}
+.so-xs{width:28px;height:28px;font-size:17px;border-width:1.5px}
+.so-btn:focus-visible,.so-x:focus-visible,.so-link:focus-visible,.so-seg button:focus-visible,.so-tabs button:focus-visible,.so-swatch:focus-visible,.so-show:focus-visible,.hub-back .so-acct:focus-visible{outline:3px solid var(--so-accent);outline-offset:3px}
+.so-input,.so-field input{font:500 17px var(--so-body);color:var(--so-ink);background:var(--so-card);border:2.5px solid var(--so-ink);border-radius:14px;padding:11px 14px;min-height:50px;width:100%;box-sizing:border-box}
+.so-input:focus,.so-field input:focus{outline:3px solid var(--so-accent);outline-offset:2px}
+.so-code{text-transform:uppercase;letter-spacing:.3em;text-align:center;font-family:var(--so-display)}
+.so-field{display:flex;flex-direction:column;gap:6px;font:800 12px/1.2 var(--so-body);letter-spacing:.1em;text-transform:uppercase;color:var(--so-ink-2)}
+.so-field input{letter-spacing:0;text-transform:none}
+.so-pw{position:relative;display:block}
+.so-pw input{padding-right:92px}
+.so-show{position:absolute;right:8px;top:50%;transform:translateY(-50%);font:800 13px/1 var(--so-body);letter-spacing:0;text-transform:none;color:var(--so-ink);background:var(--so-card-2);border:2px solid var(--so-ink);border-radius:10px;padding:8px 10px;cursor:pointer}
+.so-row{display:flex;gap:10px}
+.so-row .so-input{flex:1;min-width:0}
+.so-stack{display:flex;flex-direction:column;gap:14px;min-width:0}
+.so-label{margin:0;font:800 12px/1.2 var(--so-body);letter-spacing:.12em;text-transform:uppercase;color:var(--so-ink-2)}
+.so-hint{margin:0;font-size:14px;line-height:1.45;color:var(--so-ink-2)}
+.so-err{margin:0;background:var(--so-accent);color:var(--so-on-accent);border:2.5px solid var(--so-ink);border-radius:14px;padding:10px 14px;font-weight:600;font-size:15px}
+.so-tag{display:inline-block;font:800 10px/1 var(--so-body);letter-spacing:.08em;text-transform:uppercase;border:1.5px solid currentColor;border-radius:999px;padding:4px 7px;vertical-align:middle;white-space:nowrap}
+.so-tag.so-admin{background:var(--so-ink);color:var(--so-card);border-color:var(--so-ink)}
+.so-or{display:flex;align-items:center;gap:12px;color:var(--so-ink-2);font-weight:700;font-size:14px}
+.so-or::before,.so-or::after{content:"";flex:1;height:2px;background:var(--so-ink);opacity:.25}
+.so-av{width:32px;height:32px;flex:none;border-radius:50%;display:inline-grid;place-items:center;font:800 14px/1 var(--so-body);color:#fff;border:2px solid var(--so-ink);text-transform:uppercase}
+.so-av.so-xl{width:58px;height:58px;font-size:24px;border-width:2.5px}
+
+/* account window */
+.so-sheet{width:min(460px,calc(100% - 32px));max-height:calc(100% - 32px);margin:auto;padding:18px;background:var(--so-card);border:2.5px solid var(--so-ink);border-radius:18px;box-shadow:6px 6px 0 var(--so-shadow);box-sizing:border-box;overflow:auto}
+.so-sheet::backdrop{background:rgba(10,10,14,.55)}
+.so-sheet[open]{animation:so-pop .18s cubic-bezier(.2,.9,.3,1.2)}
+@keyframes so-pop{from{transform:translateY(12px) scale(.98);opacity:0}to{transform:none;opacity:1}}
+.so-sheet-top{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:14px}
+.so-title{margin:0;font:400 24px/1.1 var(--so-display);color:var(--so-ink)}
+.so-seg,.so-tabs{display:grid;grid-auto-columns:1fr;grid-auto-flow:column;border:2px solid var(--so-ink);border-radius:14px;overflow:hidden}
+.so-tabs{margin-bottom:14px}
+.so-seg button,.so-tabs button{font:800 15px/1.1 var(--so-body);padding:11px 6px;border:0;background:var(--so-card);color:var(--so-ink);cursor:pointer}
+.so-seg button + button,.so-tabs button + button{border-left:2px solid var(--so-ink)}
+.so-seg button[aria-pressed="true"],.so-tabs button[aria-selected="true"]{background:var(--so-ink);color:var(--so-card)}
+.so-me{display:flex;align-items:center;gap:14px}
+.so-me b{font:400 22px/1.1 var(--so-display)}
+.so-me small{display:block;margin-top:4px;color:var(--so-ink-2);font-size:14px}
+.so-swatches{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:10px}
+.so-swatch{aspect-ratio:1;border-radius:50%;border:2.5px solid var(--so-ink);cursor:pointer;min-height:40px}
+.so-swatch[aria-pressed="true"]{box-shadow:0 0 0 3px var(--so-card),0 0 0 6px var(--so-ink)}
+.so-saves,.so-accts,.so-members{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:10px}
+.so-save,.so-accts li{display:flex;gap:10px;align-items:center;justify-content:space-between;flex-wrap:wrap;border:2px solid var(--so-ink);border-radius:14px;padding:10px 12px;background:var(--so-card)}
+.so-save-main,.so-acct-main{min-width:0;flex:1 1 180px}
+.so-save-main small,.so-acct-main small{display:block;margin-top:4px;color:var(--so-ink-2);font-size:13px;overflow-wrap:anywhere}
+.so-save-acts,.so-acct-acts{display:flex;gap:8px;flex-wrap:wrap}
+.so-accts li.so-gone{opacity:.65;border-style:dashed}
+
+/* game join page: account button and "playing as" */
+.hub-back:has(.so-acct){display:flex;justify-content:space-between;align-items:center;gap:10px}
+.hub-back .so-acct{font:700 14px/1 var(--so-body);color:var(--so-ink);background:var(--so-card);border:2px solid var(--so-ink);border-radius:999px;padding:8px 13px;cursor:pointer;max-width:55%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.so-playas{display:flex;align-items:center;gap:10px;font-size:16px}
+.so-playas b{font-weight:800}
+
+/* home page: group panel */
+#party{display:flex;flex-direction:column;gap:14px;background:var(--so-card);border:2.5px solid var(--so-ink);border-radius:18px;box-shadow:5px 5px 0 var(--so-shadow);padding:18px}
+.so-party-head{display:flex;justify-content:space-between;align-items:flex-end;gap:12px}
+.so-party-head small{color:var(--so-ink-2);font-weight:700;font-size:13px}
+.so-pcode{font:400 clamp(36px,11vw,48px)/1 var(--so-display);letter-spacing:.12em;color:var(--so-accent)}
+.so-now{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;background:var(--so-card-2);border:2px dashed var(--so-ink);border-radius:14px;padding:10px 12px}
+.so-members{flex-direction:row;flex-wrap:wrap;gap:8px}
+.so-members li{display:inline-flex;align-items:center;gap:7px;padding:3px 10px 3px 3px;border:2px solid var(--so-ink);border-radius:999px;font-weight:700;font-size:15px;max-width:100%}
+.so-members li span:not(.so-av):not(.so-tag){overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+
+/* bottom bar: save at the end of a game, replay controls */
+body.so-has-bar{padding-bottom:120px}
+.so-bar{position:fixed;left:0;right:0;bottom:0;z-index:50;padding:0 12px calc(12px + env(safe-area-inset-bottom,0px));pointer-events:none}
+.so-bar-in{pointer-events:auto;max-width:540px;margin:0 auto;display:flex;align-items:center;gap:10px;flex-wrap:wrap;background:var(--so-card);border:2.5px solid var(--so-ink);border-radius:16px;box-shadow:4px 4px 0 var(--so-shadow);padding:10px 12px}
+.so-bar-txt{flex:1 1 160px;font-size:15px;font-weight:600;min-width:0}
+.so-bar-acts{display:flex;gap:8px;flex-wrap:wrap}
+.so-bar-err{flex-basis:100%}
+.so-range{flex-basis:100%;accent-color:var(--so-accent)}
+.so-panel{display:flex;flex-direction:column;gap:12px;background:var(--so-card);border:2.5px solid var(--so-ink);border-radius:18px;padding:18px;margin-top:16px}
+.so-panel p{margin:0;font-weight:600}
+/* while replaying, the game is a picture: nothing in it can be pressed */
+body.so-replay #app{pointer-events:none;user-select:none}
+@media (prefers-reduced-motion: reduce){.so-sheet[open]{animation:none}.so-btn{transition:none}}

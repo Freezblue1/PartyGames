@@ -17,6 +17,8 @@ Personne n'a besoin de créer de compte pour jouer.
 | `config.js` | La config Firebase (déjà remplie, la même que les autres jeux) |
 
 > Mise en ligne et règles Firebase : voir le [LISEZMOI à la racine](../LISEZMOI.md).
+> Compte, couleur, groupes, sauvegardes et « Revoir » : communs à tous les jeux, voir aussi le LISEZMOI à la racine.
+> Connecté, tu joues sous ton pseudo de compte et ta couleur choisie dans « Mon compte ».
 
 ## Jouer
 
@@ -54,7 +56,7 @@ Le jeu suit la **règle officielle** des Loups-Garous de Thiercelieux (https://w
 - **Carnet de soupçons** : touche un joueur dans la liste pour le marquer « suspect » ou « sûr ». Visible seulement sur ton téléphone.
 - **Récap de la partie** : à la fin, toute l'histoire nuit par nuit et jour par jour (qui la Voyante a regardé, les potions, les votes de chacun…).
 - **Statistiques du groupe** : gardées dans la partie d'une manche à l'autre (victoires, meilleur loup, meilleur flair au vote, toujours mangé en premier, increvable).
-- **Mon profil** (sur l'accueil) : ta couleur, et tes stats gardées sur ton téléphone (parties, victoires, survie, rôles joués, contre qui tu votes le plus, titre fétiche).
+- **Mon profil** (sur l'accueil du jeu) : tes stats gardées sur ton téléphone (parties, victoires, survie, rôles joués, contre qui tu votes le plus, titre fétiche).
 - **Installer l'appli** : bouton sur l'accueil (Android), ou Partager › « Sur l'écran d'accueil » (iPhone).
 - Les parties créées sur ton téléphone et inutilisées depuis 24 h sont supprimées toutes seules de Firebase.
 

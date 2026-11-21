@@ -4,11 +4,70 @@ rules_version = '2';
 // « Loup-Garou » (collection lgRooms), « Photo Roulette » (collection prRooms), « Blanc-manger coco » (collection bmRooms),
 // « Perudo » (collection pdRooms), « Qui suis-je ? » (collection qsRooms), « Poker » (collection pkRooms) et « Kems » (collection kmRooms).
 // Ce fichier contient les règles DES NEUF JEUX : colle-le en entier dans la console, à la place de tout l'existant.
-// Chaque joueur est connecté anonymement, ou avec son compte (request.auth.uid). Le créateur d'une partie (hostUid) en est le modo.
+// Chaque joueur est connecté anonymement, ou avec son compte (request.auth.uid). L'admin a tous les droits. Le créateur d'une partie (hostUid) en est le modo.
 service cloud.firestore {
   match /databases/{database}/documents {
 
     function signedIn() { return request.auth != null; }
+    // Un compte (pseudo + mot de passe) : son pseudo est dans le jeton, posé par le serveur des comptes.
+    function hasAccount() { return request.auth != null && request.auth.token.pseudo is string; }
+    // L'admin (pseudo listé dans ADMIN_PSEUDO sur Netlify) : jeton marqué admin par le serveur des comptes.
+    function isAdmin() { return request.auth != null && request.auth.token.admin == true; }
+    function isColor(c) { return c is string && c.matches('^#[0-9A-Fa-f]{6}$'); }
+
+    /* ===================== Admin : tous les droits, sur tout ===================== */
+    match /{document=**} {
+      allow read, write: if isAdmin();
+    }
+
+    /* ===================== Profils des comptes ===================== */
+    // Pseudo (toujours celui du jeton), couleur, groupe actuel. Lisible par tous les joueurs connectés.
+    match /profiles/{uid} {
+      allow read: if signedIn();
+      allow create, update: if hasAccount() && request.auth.uid == uid
+        && request.resource.data.keys().hasOnly(['pseudo', 'color', 'party', 'createdAt'])
+        && request.resource.data.pseudo == request.auth.token.pseudo
+        && isColor(request.resource.data.color)
+        && (request.resource.data.get('party', null) == null
+          || (request.resource.data.party is string && request.resource.data.party.size() == 4));
+
+      // Parties et résultats gardés : visibles seulement par leur propriétaire (et l'admin).
+      match /saves/{sid} {
+        allow read, delete: if request.auth != null && request.auth.uid == uid;
+        allow create: if hasAccount() && request.auth.uid == uid
+          && request.resource.data.kind in ['replay', 'result']
+          && request.resource.data.chunks is int && request.resource.data.chunks >= 1 && request.resource.data.chunks <= 8;
+        match /chunks/{cid} {
+          allow read, delete: if request.auth != null && request.auth.uid == uid;
+          allow create: if hasAccount() && request.auth.uid == uid
+            && request.resource.data.d is string && request.resource.data.d.size() <= 900000;
+        }
+      }
+    }
+
+    /* ===================== Groupes (accueil) ===================== */
+    // Le chef du groupe (hostUid) est le seul à changer `current` : la partie où tout le groupe le suit.
+    match /parties/{code} {
+      allow read: if signedIn();
+      allow create: if hasAccount() && code.size() == 4
+        && request.resource.data.keys().hasOnly(['hostUid', 'hostPseudo', 'createdAt', 'current'])
+        && request.resource.data.hostUid == request.auth.uid
+        && request.resource.data.hostPseudo == request.auth.token.pseudo;
+      allow update: if hasAccount() && resource.data.hostUid == request.auth.uid
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['current']);
+      allow delete: if request.auth != null && resource.data.hostUid == request.auth.uid;
+      // Chacun s'inscrit lui-même, sous son pseudo ; le chef peut retirer quelqu'un.
+      match /members/{uid} {
+        allow read: if signedIn();
+        allow create, update: if hasAccount() && request.auth.uid == uid
+          && exists(/databases/$(database)/documents/parties/$(code))
+          && request.resource.data.keys().hasOnly(['pseudo', 'color', 'joinedAt'])
+          && request.resource.data.pseudo == request.auth.token.pseudo
+          && isColor(request.resource.data.color);
+        allow delete: if request.auth != null && (request.auth.uid == uid
+          || get(/databases/$(database)/documents/parties/$(code)).data.hostUid == request.auth.uid);
+      }
+    }
 
     /* ===================== Qui de nous… ===================== */
     match /rooms/{code} {
@@ -1024,9 +1083,10 @@ service cloud.firestore {
 
     /* ===================== Comptes (page d'accueil) ===================== */
     // Pseudos, mots de passe chiffrés, téléphones et connexions déjà utilisés : seul le serveur des comptes
-    // (fonction Netlify, avec le compte de service) y touche. Aucun téléphone ne peut les lire ni les écrire.
+    // (fonction Netlify, avec le compte de service) y touche. Aucun téléphone ne peut les lire ni les écrire (sauf l'admin).
     match /accounts/{id} { allow read, write: if false; }
     match /accountDevices/{id} { allow read, write: if false; }
     match /accountIps/{id} { allow read, write: if false; }
+    match /accountsArchive/{id} { allow read, write: if false; }
   }
 }

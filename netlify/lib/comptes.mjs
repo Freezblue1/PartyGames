@@ -9,9 +9,14 @@
 //   accounts/{id}        id = sha256(pseudo en minuscules)  → pseudo, uid, sel, empreinte du mot de passe, échecs
 //   accountDevices/{id}  id = sha256(identifiant du tél.)   → pseudo du compte créé sur ce téléphone
 //   accountIps/{id}      id = HMAC(IP)                      → nombre de comptes créés depuis `since`
+//   accountsArchive/{uid}                                   → comptes supprimés par l'admin (l'historique reste visible)
 // L'IP n'est jamais stockée en clair.
+//
+// Admin : les pseudos listés dans la variable d'environnement ADMIN_PSEUDO (séparés par des virgules)
+// reçoivent `admin: true` dans leur jeton à la connexion. Ces pseudos ne peuvent pas être créés par inscription :
+// crée le compte d'abord, puis ajoute son pseudo à ADMIN_PSEUDO.
 
-import { createHash, createHmac, createSign, randomBytes, scrypt as scryptCb, timingSafeEqual } from "node:crypto";
+import { createHash, createHmac, createPublicKey, createSign, randomBytes, scrypt as scryptCb, timingSafeEqual, verify as verifySig } from "node:crypto";
 import { promisify } from "node:util";
 
 const scrypt = promisify(scryptCb);
@@ -95,15 +100,41 @@ function store(cred, fetch) {
     async get(path) { return (await this.read(path))?.data ?? null; },
     // Écrit tout d'un coup, ou rien si un document a changé entre-temps.
     // writes : [chemin, données, condition] ; condition = { exists: false } ou { updateTime } lu juste avant.
+    // data = null supprime le document.
     async commit(writes) {
+      const name = path => `projects/${PROJECT}/databases/(default)/documents/${path}`;
       const res = await call(`${DOCS.replace(/\/documents$/, "")}/documents:commit`, {
         method: "POST",
-        body: JSON.stringify({ writes: writes.map(([path, data, currentDocument]) => ({ update: { name: `projects/${PROJECT}/databases/(default)/documents/${path}`, fields: encFields(data) }, currentDocument })) })
+        body: JSON.stringify({ writes: writes.map(([path, data, currentDocument]) => data === null
+          ? { delete: name(path), ...(currentDocument && { currentDocument }) }
+          : { update: { name: name(path), fields: encFields(data) }, currentDocument }) })
       });
       if (res.ok) return true;
       const text = await res.text();
       if (res.status === 409 || /ALREADY_EXISTS|FAILED_PRECONDITION/.test(text)) return false;
       throw new Error("commit " + res.status + " " + text);
+    },
+    // Tous les documents d'une collection → [{ id, ...champs }]
+    async list(collection) {
+      const out = [];
+      let token = "";
+      do {
+        const res = await call(`${DOCS}/${collection}?pageSize=300${token ? "&pageToken=" + encodeURIComponent(token) : ""}`);
+        if (!res.ok) throw new Error("list " + res.status + " " + await res.text());
+        const j = await res.json();
+        for (const d of j.documents || []) out.push({ id: d.name.split("/").pop(), ...dec(d.fields) });
+        token = j.nextPageToken || "";
+      } while (token);
+      return out;
+    },
+    // Chemins des documents dont un champ texte vaut `value`
+    async where(collection, field, value) {
+      const res = await call(`${DOCS}:runQuery`, {
+        method: "POST",
+        body: JSON.stringify({ structuredQuery: { from: [{ collectionId: collection }], where: { fieldFilter: { field: { fieldPath: field }, op: "EQUAL", value: { stringValue: value } } } } })
+      });
+      if (!res.ok) throw new Error("query " + res.status + " " + await res.text());
+      return (await res.json()).filter(r => r.document).map(r => r.document.name.split("/documents/")[1]);
     },
     async update(path, data) {
       const mask = Object.keys(data).map(k => "updateMask.fieldPaths=" + encodeURIComponent(k)).join("&");
@@ -127,6 +158,39 @@ export function normalizeIp(ip) {
 }
 const ipId = (ip, cred) => createHmac("sha256", sha256("ip:" + cred.key)).update(normalizeIp(ip)).digest("hex");
 
+/* ---------- admin ---------- */
+const adminSet = env => new Set(String(env.ADMIN_PSEUDO || "").split(",").map(s => s.normalize("NFC").trim().toLowerCase()).filter(Boolean));
+export const isAdminPseudo = (env, pseudo) => adminSet(env).has(String(pseudo).normalize("NFC").trim().toLowerCase());
+const claimsFor = (env, pseudo) => isAdminPseudo(env, pseudo) ? { pseudo, admin: true } : { pseudo };
+
+// Vérifie le jeton de session Firebase envoyé par la page (signature Google, projet, expiration).
+const JWKS_URL = "https://www.googleapis.com/service_accounts/v1/jwk/securetoken@system.gserviceaccount.com";
+let jwks = null;
+async function googleKeys(fetch, refresh = false) {
+  if (jwks && !refresh && jwks.exp > Date.now()) return jwks.keys;
+  const res = await fetch(JWKS_URL);
+  if (!res.ok) throw new Error("jwks " + res.status);
+  const age = Number((res.headers.get("cache-control") || "").match(/max-age=(\d+)/)?.[1] || 3600);
+  jwks = { keys: (await res.json()).keys || [], exp: Date.now() + age * 1000 };
+  return jwks.keys;
+}
+export async function verifyIdToken(token, { fetch, now = Date.now() }) {
+  const bad = fail(401, "Session expirée. Reconnecte-toi.");
+  const parts = String(token || "").split(".");
+  if (parts.length !== 3) throw bad;
+  let head, claims;
+  try { head = JSON.parse(Buffer.from(parts[0], "base64url")); claims = JSON.parse(Buffer.from(parts[1], "base64url")); } catch { throw bad; }
+  if (head.alg !== "RS256" || !head.kid) throw bad;
+  let jwk = (await googleKeys(fetch)).find(k => k.kid === head.kid);
+  if (!jwk) jwk = (await googleKeys(fetch, true)).find(k => k.kid === head.kid);
+  if (!jwk) throw bad;
+  const ok = verifySig("RSA-SHA256", Buffer.from(parts[0] + "." + parts[1]), createPublicKey({ key: jwk, format: "jwk" }), Buffer.from(parts[2], "base64url"));
+  const sec = Math.floor(now / 1000);
+  if (!ok || claims.aud !== PROJECT || claims.iss !== "https://securetoken.google.com/" + PROJECT
+    || !claims.sub || claims.exp <= sec || claims.iat > sec + 300) throw bad;
+  return claims;
+}
+
 /* ---------- mots de passe ---------- */
 async function hashPassword(pass, salt) { return (await scrypt(pass.normalize("NFC"), salt, 64)).toString("hex"); }
 async function checkPassword(pass, salt, hash) {
@@ -146,6 +210,7 @@ export async function signup(body, ip, { env, fetch, now = Date.now() }) {
   if (pass.length < PASS_MIN || pass.length > PASS_MAX) throw fail(400, `Le mot de passe doit faire au moins ${PASS_MIN} caractères.`);
   if (!DEVICE_RE.test(device)) throw fail(400, "Ton navigateur n'arrive pas à se souvenir de ce téléphone. Quitte la navigation privée et réessaie.");
   if (!ip) throw fail(400, "Impossible de reconnaître ta connexion.");
+  if (isAdminPseudo(env, pseudo)) throw fail(409, "Ce pseudo est réservé.");
   const cred = credentials(env), db = store(cred, fetch);
   const deviceDoc = "accountDevices/" + sha256("device:" + device), ipDoc = "accountIps/" + ipId(ip, cred);
 
@@ -160,7 +225,7 @@ export async function signup(body, ip, { env, fetch, now = Date.now() }) {
 
   const uid = "acct_" + randomBytes(12).toString("hex"), salt = randomBytes(16).toString("hex");
   const ok = await db.commit([
-    ["accounts/" + id, { pseudo, uid, salt, hash: await hashPassword(pass, salt), createdAt: now, fails: 0, lockUntil: 0 }, { exists: false }],
+    ["accounts/" + id, { pseudo, uid, salt, hash: await hashPassword(pass, salt), createdAt: now, lastLoginAt: now, fails: 0, lockUntil: 0 }, { exists: false }],
     [deviceDoc, { account: pseudo, createdAt: now }, { exists: false }],
     [ipDoc, { count: count + 1, since }, net ? { updateTime: net.updateTime } : { exists: false }]
   ]);
@@ -181,8 +246,48 @@ export async function login(body, { env, fetch, now = Date.now() }) {
     await db.update("accounts/" + id, fails >= MAX_FAILS ? { fails: 0, lockUntil: now + LOCK_MS } : { fails });
     throw wrong;
   }
-  if (acct.fails || acct.lockUntil) await db.update("accounts/" + id, { fails: 0, lockUntil: 0 });
-  return { pseudo: acct.pseudo, token: customToken(cred, acct.uid, { pseudo: acct.pseudo }) };
+  await db.update("accounts/" + id, { fails: 0, lockUntil: 0, lastLoginAt: now });
+  const claims = claimsFor(env, acct.pseudo);
+  return { pseudo: acct.pseudo, admin: !!claims.admin, token: customToken(cred, acct.uid, claims) };
+}
+
+// Actions de l'admin. Le jeton doit porter `admin` ET le pseudo doit toujours être dans ADMIN_PSEUDO.
+export async function admin(body, { env, fetch, now = Date.now() }) {
+  const who = await verifyIdToken(body?.idToken, { fetch, now });
+  if (!who.admin || !isAdminPseudo(env, who.pseudo)) throw fail(403, "Réservé à l'admin.");
+  const cred = credentials(env), db = store(cred, fetch);
+  const target = () => {
+    const { pseudo, id } = readInput(body);
+    if (!pseudo) throw fail(400, "Quel compte ?");
+    return { pseudo, id };
+  };
+
+  if (body.action === "list") {
+    const [live, gone] = await Promise.all([db.list("accounts"), db.list("accountsArchive")]);
+    const pick = a => ({ pseudo: a.pseudo, uid: a.uid, createdAt: a.createdAt || 0, lastLoginAt: a.lastLoginAt || 0, locked: (a.lockUntil || 0) > now, admin: isAdminPseudo(env, a.pseudo) });
+    return { accounts: [...live.map(pick), ...gone.map(a => ({ ...pick(a), deletedAt: a.deletedAt || 0 }))].sort((a, b) => b.createdAt - a.createdAt) };
+  }
+  if (body.action === "reset") {
+    const { id } = target(), pass = String(body.password ?? "");
+    if (pass.length < PASS_MIN || pass.length > PASS_MAX) throw fail(400, `Le mot de passe doit faire au moins ${PASS_MIN} caractères.`);
+    if (!await db.get("accounts/" + id)) throw fail(404, "Compte introuvable.");
+    const salt = randomBytes(16).toString("hex");
+    await db.update("accounts/" + id, { salt, hash: await hashPassword(pass, salt), fails: 0, lockUntil: 0 });
+    return { ok: true };
+  }
+  if (body.action === "delete") {
+    const { id } = target(), acct = await db.get("accounts/" + id);
+    if (!acct) throw fail(404, "Compte introuvable.");
+    if (isAdminPseudo(env, acct.pseudo)) throw fail(400, "Un compte admin ne peut pas être supprimé d'ici.");
+    const devices = await db.where("accountDevices", "account", acct.pseudo);
+    await db.commit([
+      ["accountsArchive/" + acct.uid, { pseudo: acct.pseudo, uid: acct.uid, createdAt: acct.createdAt || 0, lastLoginAt: acct.lastLoginAt || 0, deletedAt: now }],
+      ["accounts/" + id, null],
+      ...devices.map(d => [d, null])
+    ]);
+    return { ok: true };
+  }
+  throw fail(400, "Action inconnue.");
 }
 
 /* ---------- HTTP ---------- */
@@ -191,11 +296,12 @@ const json = (status, data) => new Response(JSON.stringify(data), { status, head
 export async function handle(req, context, deps = { env: process.env, fetch: globalThis.fetch }) {
   if (req.method !== "POST") return json(405, { error: "Méthode non autorisée." });
   let body;
-  try { body = JSON.parse((await req.text()).slice(0, 2000)); } catch { return json(400, { error: "Requête illisible." }); }
+  try { body = JSON.parse((await req.text()).slice(0, 8000)); } catch { return json(400, { error: "Requête illisible." }); }
   const action = new URL(req.url).pathname.split("/").pop();
   try {
     if (action === "inscription") return json(200, await signup(body, context?.ip, deps));
     if (action === "connexion") return json(200, await login(body, deps));
+    if (action === "admin") return json(200, await admin(body, deps));
     return json(404, { error: "Action inconnue." });
   } catch (e) {
     if (e.public) return json(e.status, { error: e.message });

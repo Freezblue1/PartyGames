@@ -1,4 +1,5 @@
 import { firebaseConfig } from "./config.js";
+import * as Soiree from "../soiree.js";
 import { GAGES } from "./gages.js";
 
 const FB = "https://www.gstatic.com/firebasejs/10.12.2/";
@@ -39,7 +40,7 @@ const hashCode = () => { const c = normCode(location.hash.slice(1).split("-")[0]
 const hashIsTv = () => /-tv$/i.test(location.hash);
 const store = {
   get(k) { try { return localStorage.getItem(K + "-" + k); } catch { return null; } },
-  set(k, v) { try { v == null ? localStorage.removeItem(K + "-" + k) : localStorage.setItem(K + "-" + k, v); } catch {} },
+  set(k, v) { if (Soiree.replaying) return; try { v == null ? localStorage.removeItem(K + "-" + k) : localStorage.setItem(K + "-" + k, v); } catch {} },
   json(k, d) { try { return JSON.parse(this.get(k) || "null") ?? d; } catch { return d; } }
 };
 const names = list => {
@@ -144,6 +145,7 @@ const hostPlayer = () => M.players.find(p => p.id === M.room?.hostUid);
 /* Still sent while the page is in the background, as long as the phone lets it run;
    a locked phone stops it, and that player then counts as absent. */
 function heartbeat() {
+  if (Soiree.replaying) return;  // a replay never writes
   if (M.mode !== "room" || !M.code || !inRoom()) return;
   lastHb = Date.now();
   F.updateDoc(rPlayer(M.code, M.me), { seen: F.serverTimestamp() }).catch(() => {});
@@ -164,7 +166,7 @@ async function loadFirebase() {
   const [appMod, authMod, fsMod] = await Promise.all([
     import(FB + "firebase-app.js"), import(FB + "firebase-auth.js"), import(FB + "firebase-firestore.js")
   ]);
-  const fbApp = appMod.initializeApp(firebaseConfig);
+  const fbApp = appMod.getApps()[0] || appMod.initializeApp(firebaseConfig);
   AUTH = authMod.getAuth(fbApp);
   DB = fsMod.getFirestore(fbApp);
   F = { ...fsMod, signInAnonymously: authMod.signInAnonymously };
@@ -238,6 +240,7 @@ function subCustom() {
 const clearHand = () => Object.assign(M, { selHand: null, selMid: null, pending: null, arm: "" });
 let lastStep = "";
 function enterRoom(code, tv = false) {
+  Soiree.roomEntered(code, tv);
   leaveSubs();
   Object.assign(M, { mode: "room", tv, code, room: null, roomReady: false, players: [], playersReady: false,
     secret: null, deal: null, signs: null, moves: [], customs: [], choices: [], rounds: [], renaming: false, handover: false, offline: false, pickSwap: "" });
@@ -313,7 +316,7 @@ async function joinRoom(code, nick) {
   lastHb = Date.now();
   if (ps.docs.some(d => d.id === M.me)) { await F.updateDoc(rPlayer(code, M.me), { nick, seen: F.serverTimestamp() }); return; }
   const used = new Set(ps.docs.map(d => d.data().color));
-  const fav = profile().color;
+  const fav = Soiree.color();
   const color = fav && !used.has(fav) ? fav : COLORS.find(c => !used.has(c)) || COLORS[ps.size % COLORS.length];
   await F.setDoc(rPlayer(code, M.me), { nick, color, joinedAt: Date.now(), seen: F.serverTimestamp() });
 }
@@ -471,6 +474,7 @@ function hostJob(r, d) {
 }
 let hostBusy = false, jobDone = "";
 async function hostSync() {
+  if (Soiree.replaying) return;  // a replay never writes
   const r = M.room;
   if (!isMod() || hostBusy || !r || r.phase !== "play") return;
   const job = hostJob(r, M.deal);
@@ -859,8 +863,6 @@ function profilePanel() {
   const p = profile(), title = topOf(p.titles);
   return `<section class="panel">
     <div class="label">Mon profil</div>
-    <div class="swatches" role="group" aria-label="Ma couleur">${COLORS.map(c =>
-      `<button class="swatch" data-act="pick-color" data-id="${c}" style="background:${c}" aria-pressed="${p.color === c}" aria-label="Couleur ${c}"></button>`).join("")}</div>
     ${p.games ? `<ul class="stats">
         <li><b>${p.games}</b> ${p.games > 1 ? "parties" : "partie"}</li>
         <li><b>${p.wins}</b> ${p.wins > 1 ? "victoires" : "victoire"}</li>
@@ -1220,7 +1222,7 @@ async function write(fn, denied = "Action refusée : seul le modo peut faire ça
   M.busy = false; render();
 }
 const needNick = () => {
-  const nick = (M.drafts.nick || "").trim().slice(0, 18);
+  const nick = (Soiree.pseudo() || M.drafts.nick || "").trim().slice(0, 18);
   if (!nick) { M.err = "Entre d'abord ton prénom."; render(); document.getElementById("nick")?.focus(); return ""; }
   store.set("nick", nick);
   return nick;
@@ -1285,7 +1287,7 @@ const ACT = {
       for (let i = 0; i < 6 && (await F.getDoc(rRoom(code))).exists(); i++) code = genCode();
       await F.setDoc(rRoom(code), { ...freshRoom(), hostUid: M.me, createdAt: Date.now(), touchedAt: F.serverTimestamp() });
       lastHb = Date.now();
-      await F.setDoc(rPlayer(code, M.me), { nick, color: profile().color || COLORS[0], joinedAt: Date.now(), seen: F.serverTimestamp() });
+      await F.setDoc(rPlayer(code, M.me), { nick, color: Soiree.color() || COLORS[0], joinedAt: Date.now(), seen: F.serverTimestamp() });
       rememberHosted(code);
       enterRoom(code);
     });
@@ -1372,7 +1374,6 @@ const ACT = {
     const i = document.getElementById("rename"); if (i) { i.focus(); i.select(); }
   },
   "rename-cancel": () => { M.renaming = false; render(); },
-  "pick-color": d => { const p = profile(); p.color = COLORS.includes(d.id) ? d.id : null; saveProfile(p); render(); },
   "install": async () => { const e = M.installEvt; M.installEvt = null; render(); if (e) { e.prompt(); try { await e.userChoice; } catch {} } },
   "share-img": () => { const r = M.room; if (r) shareImage(r, M.rounds, pInfo).catch(() => flash("Impossible de créer l'image.")); },
   "reload": () => location.reload()
@@ -1448,6 +1449,7 @@ if ("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js").catc
 /* ---------- boot ---------- */
 const isPlaceholder = () => !firebaseConfig.apiKey || /COLLE/.test(firebaseConfig.apiKey);
 async function boot() {
+  if (await Soiree.replayBoot(M, render)) return;
   if (isPlaceholder()) { M.mode = "setup"; render(); return; }
   render();
   try { await loadFirebase(); }
@@ -1457,7 +1459,8 @@ async function boot() {
     await AUTH.authStateReady();
     const u = AUTH.currentUser || (await F.signInAnonymously(AUTH)).user;
     M.me = u.uid;
-    if (!u.isAnonymous && !M.drafts.nick) M.drafts.nick = String((await u.getIdTokenResult().catch(() => null))?.claims.pseudo || "").slice(0, 18);
+    await Soiree.start().catch(() => null);
+    if (Soiree.pseudo()) M.drafts.nick = Soiree.pseudo();
   }
   catch (e) {
     M.mode = "fatal";
@@ -1465,6 +1468,14 @@ async function boot() {
       ? "La connexion anonyme n'est pas activée dans Firebase (Authentication › Sign-in method › Anonyme)."
       : "Connexion impossible (" + (e?.code || "réseau") + ").";
     render(); return;
+  }
+  // Sent here by the group: join the host's room straight away, under the account name.
+  const auto = Soiree.autoJoinCode();
+  if (auto && auto === hashCode()) {
+    try {
+      const r = await F.getDoc(rRoom(auto));
+      if (r.exists()) { await joinRoom(auto, Soiree.pseudo(), r.data().hostUid); enterRoom(auto); return; }
+    } catch {}
   }
   const target = hashCode() || store.get("room");
   // A big-screen link opens straight on the game, without joining it.
@@ -1480,4 +1491,6 @@ async function boot() {
   M.mode = "home"; render();
   setTimeout(cleanupOldRooms, 8000);
 }
+// Shared layer (account button, own name, group, recording for replays): after every render.
+{ const draw = render; render = () => { draw(); Soiree.frame(M); }; }
 boot();

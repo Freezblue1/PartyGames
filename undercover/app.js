@@ -1,4 +1,5 @@
 import { firebaseConfig } from "./config.js";
+import * as Soiree from "../soiree.js";
 import { PACKS, GROUP_PACK } from "./words.js";
 import { GAGES } from "./gages.js";
 
@@ -27,7 +28,7 @@ const hashCode = () => { const c = normCode(location.hash.slice(1).split("-")[0]
 const hashIsTv = () => /-tv$/i.test(location.hash);
 const store = {
   get(k) { try { return localStorage.getItem(K + "-" + k); } catch { return null; } },
-  set(k, v) { try { v == null ? localStorage.removeItem(K + "-" + k) : localStorage.setItem(K + "-" + k, v); } catch {} },
+  set(k, v) { if (Soiree.replaying) return; try { v == null ? localStorage.removeItem(K + "-" + k) : localStorage.setItem(K + "-" + k, v); } catch {} },
   json(k, d) { try { return JSON.parse(this.get(k) || "null") ?? d; } catch { return d; } }
 };
 const names = list => {
@@ -200,6 +201,7 @@ const awayFor = p => !p ? Infinity : p.id === M.me ? 0 : serverNow() - seenMs(p)
 const isOnline = p => awayFor(p) < PLAYER_AWAY_MS;
 const hostPlayer = () => M.players.find(p => p.id === M.room?.hostUid);
 function heartbeat() {
+  if (Soiree.replaying) return;  // a replay never writes
   if (M.mode !== "room" || !M.code || !inRoom()) return;
   lastHb = Date.now();
   F.updateDoc(rPlayer(M.code, M.me), { seen: F.serverTimestamp(), mod: isMod() }).catch(() => {});
@@ -215,7 +217,7 @@ async function loadFirebase() {
   const [appMod, authMod, fsMod] = await Promise.all([
     import(FB + "firebase-app.js"), import(FB + "firebase-auth.js"), import(FB + "firebase-firestore.js")
   ]);
-  const fbApp = appMod.initializeApp(firebaseConfig);
+  const fbApp = appMod.getApps()[0] || appMod.initializeApp(firebaseConfig);
   AUTH = authMod.getAuth(fbApp);
   DB = fsMod.getFirestore(fbApp);
   F = { ...fsMod, signInAnonymously: authMod.signInAnonymously };
@@ -279,6 +281,7 @@ function subCustom() {
   }, () => { M.customs = []; render(); });
 }
 function enterRoom(code, tv = false) {
+  Soiree.roomEntered(code, tv);
   leaveSubs();
   Object.assign(M, { mode: "room", tv, code, room: null, roomReady: false, players: [], playersReady: false, clues: [], votes: [], secret: null, deal: null, guess: null, customs: [], choices: [], pending: null, renaming: false, handover: false, wordShown: false });
   if (!tv) store.set("room", code);
@@ -323,7 +326,7 @@ async function joinRoom(code, nick, hostUid) {
   lastHb = Date.now();
   if (ps.docs.some(d => d.id === M.me)) { await F.updateDoc(rPlayer(code, M.me), { nick, mod: hostUid === M.me, seen: F.serverTimestamp() }); return; }
   const used = new Set(ps.docs.map(d => d.data().color));
-  const fav = profile().color;
+  const fav = Soiree.color();
   const color = fav && !used.has(fav) ? fav : COLORS.find(c => !used.has(c)) || COLORS[ps.size % COLORS.length];
   await F.setDoc(rPlayer(code, M.me), { nick, color, joinedAt: Date.now(), seen: F.serverTimestamp() });
 }
@@ -356,6 +359,7 @@ function hostAuto() {
 // The votes show on their own once every survivor still connected has voted.
 let hostBusy = false;
 async function hostSync() {
+  if (Soiree.replaying) return;  // a replay never writes
   const r = M.room;
   if (!isMod() || hostBusy || M.busy || !r || r.phase !== "play") return;
   const seq = roundOrder(r.order || [], r.outIds || [], r.round);
@@ -578,8 +582,6 @@ function profilePanel() {
   const p = profile(), fan = topOf(p.votedFor), title = topOf(p.titles);
   return `<section class="panel">
     <div class="label">Mon profil</div>
-    <div class="swatches" role="group" aria-label="Ma couleur">${COLORS.map(c =>
-      `<button class="swatch" data-act="pick-color" data-id="${c}" style="background:${c}" aria-pressed="${p.color === c}" aria-label="Couleur ${c}"></button>`).join("")}</div>
     ${p.games ? `<ul class="stats">
         <li><b>${p.games}</b> ${p.games > 1 ? "parties" : "partie"}</li>
         <li><b>${p.wins}</b> ${p.wins > 1 ? "victoires" : "victoire"}</li>
@@ -1122,7 +1124,7 @@ async function write(fn, denied = "Action refusée.") {
   M.busy = false; render();
 }
 const needNick = () => {
-  const nick = cleanText(M.drafts.nick, 18);
+  const nick = cleanText(Soiree.pseudo() || M.drafts.nick, 18);
   if (!nick) { M.err = "Entre d'abord ton prénom."; render(); document.getElementById("nick")?.focus(); return ""; }
   store.set("nick", nick);
   return nick;
@@ -1138,7 +1140,7 @@ const ACT = {
       for (let i = 0; i < 6 && (await F.getDoc(rRoom(code))).exists(); i++) code = genCode();
       await F.setDoc(rRoom(code), { ...freshRoom(), hostUid: M.me, createdAt: Date.now(), touchedAt: F.serverTimestamp() });
       lastHb = Date.now();
-      await F.setDoc(rPlayer(code, M.me), { nick, color: profile().color || COLORS[0], joinedAt: Date.now(), mod: true, seen: F.serverTimestamp() });
+      await F.setDoc(rPlayer(code, M.me), { nick, color: Soiree.color() || COLORS[0], joinedAt: Date.now(), mod: true, seen: F.serverTimestamp() });
       rememberHosted(code);
       enterRoom(code);
     });
@@ -1260,7 +1262,6 @@ const ACT = {
     const i = document.getElementById("rename"); if (i) { i.focus(); i.select(); }
   },
   "rename-cancel": () => { M.renaming = false; render(); },
-  "pick-color": d => { const p = profile(); p.color = COLORS.includes(d.id) ? d.id : null; saveProfile(p); render(); },
   "install": async () => { const e = M.installEvt; M.installEvt = null; render(); if (e) { e.prompt(); try { await e.userChoice; } catch {} } },
   "share-img": () => {
     const r = M.room; if (!r) return;
@@ -1404,6 +1405,7 @@ if ("serviceWorker" in navigator && !window.UC_FB) navigator.serviceWorker.regis
 /* ---------- boot ---------- */
 const isPlaceholder = () => !firebaseConfig.apiKey || /COLLE/.test(firebaseConfig.apiKey);
 async function boot() {
+  if (await Soiree.replayBoot(M, render)) return;
   const l = store.json("local", null);
   if (l && l.players) M.local = l;
   if (isPlaceholder()) { M.mode = "setup"; render(); return; }
@@ -1415,7 +1417,8 @@ async function boot() {
     await AUTH.authStateReady();
     const u = AUTH.currentUser || (await F.signInAnonymously(AUTH)).user;
     M.me = u.uid;
-    if (!u.isAnonymous && !M.drafts.nick) M.drafts.nick = String((await u.getIdTokenResult().catch(() => null))?.claims.pseudo || "").slice(0, 18);
+    await Soiree.start().catch(() => null);
+    if (Soiree.pseudo()) M.drafts.nick = Soiree.pseudo();
   }
   catch (e) {
     M.mode = "fatal";
@@ -1425,6 +1428,14 @@ async function boot() {
     render(); return;
   }
   setTimeout(() => cleanupOldRooms().catch(() => {}), 8000);
+  // Sent here by the group: join the host's room straight away, under the account name.
+  const auto = Soiree.autoJoinCode();
+  if (auto && auto === hashCode()) {
+    try {
+      const r = await F.getDoc(rRoom(auto));
+      if (r.exists()) { await joinRoom(auto, Soiree.pseudo(), r.data().hostUid); enterRoom(auto); return; }
+    } catch {}
+  }
   const target = hashCode() || store.get("room");
   // A big-screen link opens straight on the game, without joining it.
   if (target && hashIsTv()) { enterRoom(target, true); return; }
@@ -1438,4 +1449,6 @@ async function boot() {
   }
   M.mode = "home"; render();
 }
+// Shared layer (account button, own name, group, recording for replays): after every render.
+{ const draw = render; render = () => { draw(); Soiree.frame(M); }; }
 boot();

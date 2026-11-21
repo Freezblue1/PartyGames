@@ -17,6 +17,8 @@ Personne n'a besoin de créer de compte pour jouer.
 | `manifest.webmanifest`, `sw.js`, `icon-*.png` | Ce qui permet d'installer le jeu comme une appli |
 
 > Mise en ligne et règles Firebase : voir le [LISEZMOI à la racine](../LISEZMOI.md).
+> Compte, couleur, groupes, sauvegardes et « Revoir » : communs à tous les jeux, voir aussi le LISEZMOI à la racine.
+> Connecté, tu joues sous ton pseudo de compte et ta couleur choisie dans « Mon compte ».
 
 ## Jouer
 
@@ -30,7 +32,7 @@ Personne n'a besoin de créer de compte pour jouer.
 - À la fin : les rôles, un **titre** pour chacun (Sherlock, Menteur pro, Mouton…), les gages des perdants, le classement, et un bouton pour **partager le résultat en image**.
 - **Grand écran** : dans « Code de la partie », le modo trouve un lien à ouvrir sur une TV ou un ordi. Il montre le QR code, les indices, les votes et les rôles révélés, jamais les mots secrets.
 - **Passer la main** : le modo peut donner son rôle à quelqu'un d'autre, même en pleine partie. S'il perd la connexion plus d'une minute, les autres peuvent **devenir le modo**.
-- **Mon profil** (sur l'accueil) : ta couleur, et tes stats gardées sur ton téléphone (parties, victoires, rôles joués, titre fétiche…).
+- **Mon profil** (sur l'accueil du jeu) : tes stats gardées sur ton téléphone (parties, victoires, rôles joués, titre fétiche…).
 - **Installer l'appli** : bouton sur l'accueil (Android), ou Partager › « Sur l'écran d'accueil » (iPhone).
 - Les parties créées sur ton téléphone et inutilisées depuis 24 h sont supprimées toutes seules de Firebase.
 - Pas de réseau ou envie de faire simple ? **Jouer à plusieurs sur un seul téléphone** : le téléphone passe de main en main.
