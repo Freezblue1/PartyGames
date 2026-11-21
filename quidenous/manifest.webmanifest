@@ -1,0 +1,17 @@
+{
+  "name": "Qui de nous…",
+  "short_name": "Qui de nous",
+  "description": "Le jeu de soirée : une question, chacun vote en secret sur son téléphone, le verdict tombe.",
+  "lang": "fr",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#F2C230",
+  "theme_color": "#F2C230",
+  "icons": [
+    { "src": "icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}

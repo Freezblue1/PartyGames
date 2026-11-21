@@ -1,0 +1,17 @@
+{
+  "name": "Poker",
+  "short_name": "Poker",
+  "description": "Le Texas Hold'em entre amis, chacun sur son téléphone : tes cartes restent dans ta main, les jetons et le tapis sur toutes les autres.",
+  "lang": "fr",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#17603F",
+  "theme_color": "#17603F",
+  "icons": [
+    { "src": "icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}

@@ -1,0 +1,13 @@
+# Separate project with its own repo (Freezblue1/Inkwell)
+inkwell/
+
+# Machine-specific Claude Code settings
+.claude/
+
+node_modules/
+Thumbs.db
+desktop.ini
+.DS_Store
+
+# Empty lockfile npm leaves here when running inkwell scripts
+/package-lock.json

@@ -1,0 +1,17 @@
+{
+  "name": "Qui suis-je ?",
+  "short_name": "Qui suis-je",
+  "description": "Un post-it sur le front, chacun sur son téléphone : tout le monde sait qui tu es, sauf toi.",
+  "lang": "fr",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#B7A4F4",
+  "theme_color": "#B7A4F4",
+  "icons": [
+    { "src": "icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}

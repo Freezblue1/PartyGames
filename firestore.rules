@@ -1,0 +1,1025 @@
+rules_version = '2';
+
+// Règles du projet Firebase partagé par « Qui de nous… » (collection rooms), « Undercover » (collection ucRooms),
+// « Loup-Garou » (collection lgRooms), « Photo Roulette » (collection prRooms), « Blanc-manger coco » (collection bmRooms),
+// « Perudo » (collection pdRooms), « Qui suis-je ? » (collection qsRooms), « Poker » (collection pkRooms) et « Kems » (collection kmRooms).
+// Ce fichier contient les règles DES NEUF JEUX : colle-le en entier dans la console, à la place de tout l'existant.
+// Chaque joueur est connecté anonymement (request.auth.uid). Le créateur d'une partie (hostUid) en est le modo.
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function signedIn() { return request.auth != null; }
+
+    /* ===================== Qui de nous… ===================== */
+    match /rooms/{code} {
+      function room() { return get(/databases/$(database)/documents/rooms/$(code)).data; }
+      function isHost() { return signedIn() && room().hostUid == request.auth.uid; }
+      function isPlayer() { return signedIn() && exists(/databases/$(database)/documents/rooms/$(code)/players/$(request.auth.uid)); }
+      // Le modo a quitté la table, ou son téléphone ne donne plus signe de vie depuis 50 secondes.
+      function hostGone(h) {
+        let p = /databases/$(database)/documents/rooms/$(code)/players/$(h);
+        return !exists(p) || !('seen' in get(p).data) || get(p).data.seen < request.time - duration.value(50, 's');
+      }
+
+      // On ouvre une partie en connaissant son code ; impossible de lister toutes les parties.
+      allow get: if signedIn();
+      allow list: if false;
+      allow create: if signedIn()
+        && code.matches('^[A-Z0-9]{4}$')
+        && request.resource.data.hostUid == request.auth.uid;
+      // Seul le modo règle, lance, révèle et fait avancer la partie ; il peut passer son rôle à un joueur à table.
+      // Si le modo a disparu, un joueur à table peut prendre sa place (et rien d'autre dans la même écriture).
+      allow update: if signedIn() && (
+        (resource.data.hostUid == request.auth.uid
+          && (request.resource.data.hostUid == resource.data.hostUid
+            || exists(/databases/$(database)/documents/rooms/$(code)/players/$(request.resource.data.hostUid))))
+        || (isPlayer()
+          && request.resource.data.hostUid == request.auth.uid
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['hostUid'])
+          && hostGone(resource.data.hostUid)));
+      allow delete: if signedIn() && resource.data.hostUid == request.auth.uid;
+
+      match /players/{uid} {
+        allow read: if signedIn();
+        // Chacun gère sa propre place ; seul le modo peut porter le badge « modo ».
+        allow create, update: if signedIn() && request.auth.uid == uid
+          && request.resource.data.nick is string
+          && request.resource.data.nick.size() >= 1 && request.resource.data.nick.size() <= 18
+          && request.resource.data.color is string && request.resource.data.color.size() <= 9
+          && (request.resource.data.get('mod', false) == false || room().hostUid == request.auth.uid);
+        // On peut partir ; le modo peut retirer quelqu'un.
+        allow delete: if signedIn() && (request.auth.uid == uid || isHost());
+      }
+
+      match /votes/{vid} {
+        allow read: if signedIn();
+        // On vote pour soi, à la question en cours, tant que le modo n'a pas révélé.
+        allow create, update: if isPlayer()
+          && request.resource.data.voter == request.auth.uid
+          && vid == request.resource.data.gameId + '_' + string(request.resource.data.round) + '_' + request.auth.uid
+          && room().phase == 'play'
+          && request.resource.data.gameId == room().gameId
+          && request.resource.data.round == room().round
+          && room().revealed != room().round
+          && request.resource.data.target is string;
+        allow delete: if isHost();
+      }
+
+      // Questions maison : seul le modo peut les marquer « validées » (ok), à la création ou ensuite.
+      match /custom/{qid} {
+        allow read: if signedIn();
+        allow create: if isPlayer()
+          && request.resource.data.by == request.auth.uid
+          && request.resource.data.text is string
+          && request.resource.data.text.size() >= 3 && request.resource.data.text.size() <= 160
+          && (request.resource.data.get('ok', false) == false || isHost());
+        allow update: if isHost() && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['ok']);
+        allow delete: if signedIn() && (resource.data.by == request.auth.uid || isHost());
+      }
+
+      // Gage, vérité ou gorgées : chacun choisit pour soi, une seule fois, une fois les résultats tombés.
+      match /choices/{cid} {
+        allow read: if signedIn();
+        allow create: if isPlayer()
+          && request.resource.data.uid == request.auth.uid
+          && cid == room().gameId + '_' + string(room().round) + '_' + request.auth.uid
+          && request.resource.data.gameId == room().gameId
+          && request.resource.data.round == room().round
+          && room().revealed == room().round
+          && request.resource.data.kind in ['dare', 'truth', 'drink'];
+        allow delete: if isHost();
+      }
+    }
+
+    /* ===================== Undercover ===================== */
+    match /ucRooms/{code} {
+      function room() { return get(/databases/$(database)/documents/ucRooms/$(code)).data; }
+      function isHost() { return signedIn() && room().hostUid == request.auth.uid; }
+      function isPlayer() { return signedIn() && exists(/databases/$(database)/documents/ucRooms/$(code)/players/$(request.auth.uid)); }
+      // Joue la manche en cours et n'a pas été éliminé.
+      function alive() { return room().phase == 'play' && request.auth.uid in room().order && !(request.auth.uid in room().outIds); }
+      // Le modo a quitté la table, ou son téléphone ne donne plus signe de vie depuis 1 minute.
+      function hostGone(h) {
+        let p = /databases/$(database)/documents/ucRooms/$(code)/players/$(h);
+        return !exists(p) || !('seen' in get(p).data) || get(p).data.seen < request.time - duration.value(60, 's');
+      }
+
+      allow get: if signedIn();
+      allow list: if false;
+      allow create: if signedIn()
+        && code.matches('^[A-Z0-9]{4}$')
+        && request.resource.data.hostUid == request.auth.uid;
+      // Seul le modo règle, distribue, révèle et fait avancer la partie ; il peut passer son rôle à un joueur à table.
+      // Si le modo a disparu, un joueur à table peut prendre sa place (et rien d'autre dans la même écriture).
+      allow update: if signedIn() && (
+        (resource.data.hostUid == request.auth.uid
+          && (request.resource.data.hostUid == resource.data.hostUid
+            || exists(/databases/$(database)/documents/ucRooms/$(code)/players/$(request.resource.data.hostUid))))
+        || (isPlayer()
+          && request.resource.data.hostUid == request.auth.uid
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['hostUid', 'touchedAt'])
+          && hostGone(resource.data.hostUid)));
+      allow delete: if signedIn() && resource.data.hostUid == request.auth.uid;
+
+      match /players/{uid} {
+        allow read: if signedIn();
+        allow create, update: if signedIn() && request.auth.uid == uid
+          && request.resource.data.nick is string
+          && request.resource.data.nick.size() >= 1 && request.resource.data.nick.size() <= 18
+          && request.resource.data.color is string && request.resource.data.color.size() <= 9
+          && (request.resource.data.get('mod', false) == false || room().hostUid == request.auth.uid);
+        allow delete: if signedIn() && (request.auth.uid == uid || isHost());
+      }
+
+      // Mots maison : une paire n'est lisible que par celui qui l'a proposée et par le modo, qui seul peut la valider (ok).
+      match /custom/{pid} {
+        allow read: if signedIn() && (isHost() || resource.data.by == request.auth.uid);
+        allow create: if isPlayer()
+          && request.resource.data.by == request.auth.uid
+          && request.resource.data.a is string && request.resource.data.a.size() >= 1 && request.resource.data.a.size() <= 30
+          && request.resource.data.b is string && request.resource.data.b.size() >= 1 && request.resource.data.b.size() <= 30
+          && (request.resource.data.get('ok', false) == false || isHost());
+        allow update: if isHost() && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['ok']);
+        allow delete: if signedIn() && (resource.data.by == request.auth.uid || isHost());
+      }
+
+      // Gage ou vérité : à la fin de la partie, chaque joueur de la partie choisit pour soi, une seule fois.
+      match /choices/{cid} {
+        allow read: if signedIn();
+        allow create: if isPlayer()
+          && request.resource.data.uid == request.auth.uid
+          && cid == room().gameId + '_' + request.auth.uid
+          && request.resource.data.gameId == room().gameId
+          && room().phase == 'end'
+          && request.auth.uid in room().order
+          && request.resource.data.kind in ['dare', 'truth'];
+        allow delete: if isHost();
+      }
+
+      // Le mot secret de chacun : distribué par le modo, lisible uniquement par son destinataire.
+      match /secret/{uid} {
+        allow read: if signedIn() && request.auth.uid == uid;
+        allow write: if isHost();
+      }
+
+      // Qui a quel rôle et les deux mots : réservé au modo.
+      match /deal/{d} {
+        allow read, write: if isHost();
+      }
+
+      // Un indice par joueur en vie et par tour, impossible à modifier ensuite.
+      match /clues/{cid} {
+        allow read: if signedIn();
+        allow create: if isPlayer() && alive()
+          && request.resource.data.uid == request.auth.uid
+          && cid == request.resource.data.gameId + '_' + string(request.resource.data.round) + '_' + request.auth.uid
+          && request.resource.data.gameId == room().gameId
+          && request.resource.data.round == room().round
+          && room().step == 'clues'
+          && request.resource.data.text is string
+          && request.resource.data.text.size() >= 1 && request.resource.data.text.size() <= 30;
+        allow delete: if isHost();
+      }
+
+      // On vote pour soi, au vote en cours, tant que le modo n'a pas révélé ; jamais contre soi-même.
+      match /votes/{vid} {
+        allow read: if signedIn();
+        allow create, update: if isPlayer() && alive()
+          && request.resource.data.voter == request.auth.uid
+          && vid == request.resource.data.gameId + '_' + string(request.resource.data.round) + '_' + string(request.resource.data.v) + '_' + request.auth.uid
+          && request.resource.data.gameId == room().gameId
+          && request.resource.data.round == room().round
+          && request.resource.data.v == room().voteN
+          && room().revealed != string(request.resource.data.round) + '.' + string(request.resource.data.v)
+          && request.resource.data.target is string
+          && request.resource.data.target != request.auth.uid;
+        allow delete: if isHost();
+      }
+
+      // La seule réponse de Mr White, quand il vient d'être éliminé.
+      match /guess/{gid} {
+        allow read: if signedIn();
+        allow create: if signedIn()
+          && gid == room().gameId
+          && room().phase == 'play'
+          && room().step == 'white'
+          && room().whiteUid == request.auth.uid
+          && request.resource.data.uid == request.auth.uid
+          && request.resource.data.text is string
+          && request.resource.data.text.size() >= 1 && request.resource.data.text.size() <= 40;
+        allow delete: if isHost();
+      }
+    }
+
+    /* ===================== Loup-Garou ===================== */
+    match /lgRooms/{code} {
+      function room() { return get(/databases/$(database)/documents/lgRooms/$(code)).data; }
+      function deal() { return get(/databases/$(database)/documents/lgRooms/$(code)/deal/current).data; }
+      function isHost() { return signedIn() && room().hostUid == request.auth.uid; }
+      // Le meneur, choisi par le modo : il ne joue pas, il voit les coulisses.
+      function isNarrator() { return signedIn() && room().get('narrator', '') == request.auth.uid; }
+      function isPlayer() { return signedIn() && exists(/databases/$(database)/documents/lgRooms/$(code)/players/$(request.auth.uid)); }
+      // Joue la partie en cours et n'est pas mort.
+      function alive() { return room().phase == 'play' && request.auth.uid in room().order && !(request.auth.uid in room().outIds); }
+      // Les règles lisent la distribution secrète sans la montrer à personne :
+      // la meute, ce sont les cartes de loup (Loup-Garou, Loup Blanc, Père des Loups) et les joueurs infectés.
+      function isWolf() {
+        return deal().gameId == room().gameId
+          && (deal().roles[request.auth.uid] in ['wolf', 'whitewolf', 'infect'] || request.auth.uid in deal().get('infected', []));
+      }
+      // Le modo a quitté le village, ou son téléphone ne donne plus signe de vie depuis 1 minute.
+      function hostGone(h) {
+        let p = /databases/$(database)/documents/lgRooms/$(code)/players/$(h);
+        return !exists(p) || !('seen' in get(p).data) || get(p).data.seen < request.time - duration.value(60, 's');
+      }
+      // Le numéro d'étape et la partie en cours, inscrits dans l'identifiant du document.
+      function nowKey(d, id) {
+        return d.gameId == room().gameId && d.key == room().seq && d.uid == request.auth.uid
+          && id == d.gameId + '_' + string(d.key) + '_' + request.auth.uid;
+      }
+
+      allow get: if signedIn();
+      allow list: if false;
+      allow create: if signedIn()
+        && code.matches('^[A-Z0-9]{4}$')
+        && request.resource.data.hostUid == request.auth.uid;
+      // Seul le modo règle, distribue et choisit le meneur ; il peut passer son rôle à un joueur à table.
+      // Pendant la partie, le meneur peut aussi la faire avancer, sans jamais toucher au modo, au choix du meneur ni aux réglages.
+      // Si le modo a disparu, un joueur à table peut prendre sa place (et rien d'autre dans la même écriture).
+      allow update: if signedIn()
+        && ((resource.data.hostUid == request.auth.uid
+            && (request.resource.data.hostUid == resource.data.hostUid
+              || exists(/databases/$(database)/documents/lgRooms/$(code)/players/$(request.resource.data.hostUid))))
+          || (resource.data.phase == 'play'
+            && request.resource.data.hostUid == resource.data.hostUid
+            && resource.data.get('narrator', '') == request.auth.uid
+            && request.resource.data.get('narrator', '') == resource.data.get('narrator', '')
+            && request.resource.data.settings == resource.data.settings)
+          || (isPlayer()
+            && request.resource.data.hostUid == request.auth.uid
+            && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['hostUid', 'touchedAt'])
+            && hostGone(resource.data.hostUid)));
+      allow delete: if signedIn() && resource.data.hostUid == request.auth.uid;
+
+      match /players/{uid} {
+        allow read: if signedIn();
+        allow create, update: if signedIn() && request.auth.uid == uid
+          && request.resource.data.nick is string
+          && request.resource.data.nick.size() >= 1 && request.resource.data.nick.size() <= 18
+          && request.resource.data.color is string && request.resource.data.color.size() <= 9
+          && (request.resource.data.get('mod', false) == false || room().hostUid == request.auth.uid);
+        allow delete: if signedIn() && (request.auth.uid == uid || isHost());
+      }
+
+      // Gages maison : un gage n'est lisible que par celui qui l'a écrit et par le modo, qui seul peut le valider (ok).
+      match /custom/{pid} {
+        allow read: if signedIn() && (isHost() || resource.data.by == request.auth.uid);
+        allow create: if isPlayer()
+          && request.resource.data.by == request.auth.uid
+          && request.resource.data.kind in ['dare', 'truth']
+          && request.resource.data.text is string && request.resource.data.text.size() >= 3 && request.resource.data.text.size() <= 140
+          && (request.resource.data.get('ok', false) == false || isHost());
+        allow update: if isHost() && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['ok']);
+        allow delete: if signedIn() && (resource.data.by == request.auth.uid || isHost());
+      }
+
+      // Testament : écrit par un joueur en vie, lisible par son auteur, puis par tous à sa mort (et à la fin de la partie).
+      match /wills/{wid} {
+        allow get: if signedIn() && (wid == room().gameId + '_' + request.auth.uid
+          || room().phase == 'end'
+          || wid.split('_')[1] in room().outIds);
+        allow create, update: if isPlayer() && alive()
+          && wid == room().gameId + '_' + request.auth.uid
+          && request.resource.data.uid == request.auth.uid
+          && request.resource.data.gameId == room().gameId
+          && request.resource.data.text is string && request.resource.data.text.size() >= 1 && request.resource.data.text.size() <= 200;
+        allow delete: if isHost() || (signedIn() && wid == room().gameId + '_' + request.auth.uid);
+        allow list: if isHost();
+      }
+
+      // Gage ou vérité : à la fin de la partie, chaque joueur de la partie choisit pour soi, une seule fois.
+      match /choices/{cid} {
+        allow read: if signedIn();
+        allow create: if isPlayer()
+          && request.resource.data.uid == request.auth.uid
+          && cid == room().gameId + '_' + request.auth.uid
+          && request.resource.data.gameId == room().gameId
+          && room().phase == 'end'
+          && request.auth.uid in room().order
+          && request.resource.data.kind in ['dare', 'truth'];
+        allow delete: if isHost();
+      }
+
+      // La carte de chacun et ce qu'il apprend la nuit : écrit par le modo, lisible uniquement par son destinataire.
+      match /secret/{uid} {
+        allow read: if signedIn() && request.auth.uid == uid;
+        allow write: if isHost();
+      }
+
+      // Qui a quelle carte, les amoureux, les potions, les cartes du centre : réservé au modo (et lisible par le meneur).
+      match /deal/{d} {
+        allow read: if isHost() || isNarrator();
+        allow write: if isHost();
+      }
+
+      // Actions de nuit, choix du Voleur, tir du Chasseur, successeur du Maire :
+      // lisibles par le modo, le meneur et leur auteur, impossibles à modifier.
+      match /acts/{aid} {
+        allow get: if signedIn() && (isHost() || isNarrator() || aid.matches('.*_' + request.auth.uid));
+        allow list: if isHost() || isNarrator();
+        allow create: if isPlayer()
+          && nowKey(request.resource.data, aid)
+          && request.resource.data.kind is string
+          && ((room().step in ['night', 'thief', 'witch'] && alive())
+            || (room().step in ['hunter', 'heir'] && room().actorUid == request.auth.uid));
+        allow delete: if isHost();
+      }
+
+      // Les votes de la meute : seuls les loups (et le modo, et le meneur) les voient.
+      match /wolves/{wid} {
+        allow read: if isHost() || isNarrator() || (isPlayer() && isWolf());
+        allow create, update: if isPlayer() && alive() && isWolf()
+          && nowKey(request.resource.data, wid)
+          && room().step == 'night'
+          && request.resource.data.target is string;
+        allow delete: if isHost();
+      }
+
+      // On vote pour soi, au vote en cours, tant que le modo n'a pas révélé ; jamais pour soi-même ; l'Idiot démasqué ne vote plus.
+      match /votes/{vid} {
+        allow read: if signedIn();
+        allow create, update: if isPlayer() && alive()
+          && !(request.auth.uid in room().idiots)
+          && request.resource.data.voter == request.auth.uid
+          && vid == request.resource.data.gameId + '_' + request.resource.data.key + '_' + request.auth.uid
+          && request.resource.data.gameId == room().gameId
+          && room().step == 'vote'
+          && request.resource.data.key == string(room().seq) + '.' + string(room().voteN)
+          && room().revealed != request.resource.data.key
+          && request.resource.data.target is string
+          && request.resource.data.target != request.auth.uid;
+        allow delete: if isHost();
+      }
+    }
+
+    /* ===================== Photo Roulette ===================== */
+    // Chaque photo est rangée en trois morceaux, écrits ensemble par son propriétaire :
+    //   photos/{pid} : rien que le numéro de partie (le modo les liste pour faire le paquet) ;
+    //   pics/{pid}   : l'image elle-même, réduite, sans le nom de son propriétaire ;
+    //   owners/{pid} : à qui elle est. Personne d'autre ne peut le lire, pas même le modo, tant que la photo n'est pas dévoilée.
+    match /prRooms/{code} {
+      function room() { return get(/databases/$(database)/documents/prRooms/$(code)).data; }
+      function isHost() { return signedIn() && room().hostUid == request.auth.uid; }
+      function isPlayer() { return signedIn() && exists(/databases/$(database)/documents/prRooms/$(code)/players/$(request.auth.uid)); }
+      function ownerOf(pid) { return get(/databases/$(database)/documents/prRooms/$(code)/owners/$(pid)).data.uid; }
+      function ownerAfter(pid) { return getAfter(/databases/$(database)/documents/prRooms/$(code)/owners/$(pid)).data.uid; }
+      // On ajoute des photos à la partie en préparation, pas une fois qu'elle a commencé.
+      function canAdd() { return isPlayer() && room().phase == 'lobby' && request.resource.data.gameId == room().gameId; }
+
+      allow get: if signedIn();
+      allow list: if false;
+      allow create: if signedIn()
+        && code.matches('^[A-Z0-9]{4}$')
+        && request.resource.data.hostUid == request.auth.uid;
+      // Seul le modo règle, lance et fait avancer la partie. Pendant une partie, le paquet ne bouge plus,
+      // et il ne peut dévoiler (« shown ») que la photo en cours : il ne sait rien d'avance, lui non plus.
+      allow update: if signedIn()
+        && resource.data.hostUid == request.auth.uid
+        && request.resource.data.hostUid == resource.data.hostUid
+        && (resource.data.phase != 'play'
+          || request.resource.data.get('deck', []) == resource.data.get('deck', [])
+          || request.resource.data.gameId != resource.data.gameId)
+        && (request.resource.data.get('shown', []) == resource.data.get('shown', [])
+          || (request.resource.data.get('shown', []).size() == 0 && request.resource.data.gameId != resource.data.gameId)
+          || (resource.data.phase == 'play'
+            && request.resource.data.round == resource.data.round
+            && request.resource.data.get('shown', []) == resource.data.get('shown', []).concat([resource.data.deck[resource.data.round - 1]])));
+      allow delete: if signedIn() && resource.data.hostUid == request.auth.uid;
+
+      match /players/{uid} {
+        allow read: if signedIn();
+        allow create, update: if signedIn() && request.auth.uid == uid
+          && request.resource.data.nick is string
+          && request.resource.data.nick.size() >= 1 && request.resource.data.nick.size() <= 18
+          && request.resource.data.color is string && request.resource.data.color.size() <= 9
+          && (request.resource.data.get('mod', false) == false || room().hostUid == request.auth.uid);
+        allow delete: if signedIn() && (request.auth.uid == uid || isHost());
+      }
+
+      match /photos/{pid} {
+        allow read: if isHost();
+        allow create: if canAdd() && ownerAfter(pid) == request.auth.uid;
+        allow delete: if isHost() || ownerOf(pid) == request.auth.uid;
+      }
+
+      // Lisible par tous les joueurs qui connaissent son numéro (il est dans le paquet), jamais listable.
+      match /pics/{pid} {
+        allow get: if signedIn();
+        allow list: if false;
+        allow create: if canAdd() && ownerAfter(pid) == request.auth.uid
+          && request.resource.data.data is string
+          && request.resource.data.data.size() <= 900000;
+        allow delete: if isHost() || ownerOf(pid) == request.auth.uid;
+      }
+
+      // Créé en même temps que la photo (impossible de s'approprier celle d'un autre), lisible par son propriétaire,
+      // puis par tout le monde une fois la photo dévoilée.
+      match /owners/{pid} {
+        allow get: if signedIn() && (resource.data.uid == request.auth.uid
+          || (resource.data.gameId == room().gameId && pid in room().get('shown', [])));
+        allow list: if signedIn() && resource.data.uid == request.auth.uid;
+        allow create: if canAdd()
+          && request.resource.data.uid == request.auth.uid
+          && !exists(/databases/$(database)/documents/prRooms/$(code)/photos/$(pid))
+          && existsAfter(/databases/$(database)/documents/prRooms/$(code)/photos/$(pid))
+          && existsAfter(/databases/$(database)/documents/prRooms/$(code)/pics/$(pid));
+        allow delete: if isHost() || resource.data.uid == request.auth.uid;
+      }
+
+      // On vote pour soi, à la photo en cours, avant la fin du chrono ; jamais pour soi-même.
+      // L'heure du vote est celle du serveur : c'est elle qui compte pour le bonus de rapidité.
+      match /votes/{vid} {
+        allow read: if signedIn();
+        allow create, update: if isPlayer()
+          && request.resource.data.voter == request.auth.uid
+          && vid == request.resource.data.gameId + '_' + string(request.resource.data.round) + '_' + request.auth.uid
+          && room().phase == 'play'
+          && room().step == 'guess'
+          && request.resource.data.gameId == room().gameId
+          && request.resource.data.round == room().round
+          && request.resource.data.target is string
+          && request.resource.data.target != request.auth.uid
+          && request.resource.data.target in room().order
+          && request.resource.data.at == request.time
+          && (room().timer == 0 || request.time < room().roundAt + duration.value(room().timer + 3, 's'));
+        allow delete: if isHost();
+      }
+    }
+
+    /* ===================== Blanc-manger coco ===================== */
+    match /bmRooms/{code} {
+      function room() { return get(/databases/$(database)/documents/bmRooms/$(code)).data; }
+      function isHost() { return signedIn() && room().hostUid == request.auth.uid; }
+      function isPlayer() { return signedIn() && exists(/databases/$(database)/documents/bmRooms/$(code)/players/$(request.auth.uid)); }
+      // La main du joueur qui écrit, telle que le modo l'a distribuée.
+      function myHand() { return get(/databases/$(database)/documents/bmRooms/$(code)/secret/$(request.auth.uid)).data; }
+      // Le modo a quitté la table, ou son téléphone ne donne plus signe de vie depuis 1 minute.
+      function hostGone(h) {
+        let p = /databases/$(database)/documents/bmRooms/$(code)/players/$(h);
+        return !exists(p) || !('seen' in get(p).data) || get(p).data.seen < request.time - duration.value(60, 's');
+      }
+      // La manche en cours, inscrite dans l'identifiant du document.
+      function thisRound(d) {
+        return room().phase == 'play' && d.gameId == room().gameId && d.round == room().round;
+      }
+
+      allow get: if signedIn();
+      allow list: if false;
+      allow create: if signedIn()
+        && code.matches('^[A-Z0-9]{4}$')
+        && request.resource.data.hostUid == request.auth.uid;
+      // Seul le modo règle, distribue et fait avancer la partie ; il peut passer son rôle à un joueur à table.
+      // Si le modo a disparu, un joueur à table peut prendre sa place (et rien d'autre dans la même écriture).
+      allow update: if signedIn() && (
+        (resource.data.hostUid == request.auth.uid
+          && (request.resource.data.hostUid == resource.data.hostUid
+            || exists(/databases/$(database)/documents/bmRooms/$(code)/players/$(request.resource.data.hostUid))))
+        || (isPlayer()
+          && request.resource.data.hostUid == request.auth.uid
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['hostUid', 'touchedAt'])
+          && hostGone(resource.data.hostUid)));
+      allow delete: if signedIn() && resource.data.hostUid == request.auth.uid;
+
+      match /players/{uid} {
+        allow read: if signedIn();
+        allow create, update: if signedIn() && request.auth.uid == uid
+          && request.resource.data.nick is string
+          && request.resource.data.nick.size() >= 1 && request.resource.data.nick.size() <= 18
+          && request.resource.data.color is string && request.resource.data.color.size() <= 9
+          && (request.resource.data.get('mod', false) == false || room().hostUid == request.auth.uid);
+        allow delete: if signedIn() && (request.auth.uid == uid || isHost());
+      }
+
+      // Cartes maison : lisibles par leur auteur et par le modo seulement (elles arrivent par surprise) ; seul le modo les valide (ok).
+      match /custom/{cid} {
+        allow read: if signedIn() && (isHost() || resource.data.by == request.auth.uid);
+        allow create: if isPlayer()
+          && request.resource.data.by == request.auth.uid
+          && request.resource.data.kind in ['q', 'a']
+          && request.resource.data.text is string
+          && request.resource.data.text.size() >= 2 && request.resource.data.text.size() <= 150
+          && (request.resource.data.get('ok', false) == false || isHost());
+        allow update: if isHost() && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['ok']);
+        allow delete: if signedIn() && (resource.data.by == request.auth.uid || isHost());
+      }
+
+      // La main de chacun : distribuée par le modo, lisible uniquement par son propriétaire.
+      match /secret/{uid} {
+        allow read: if signedIn() && request.auth.uid == uid;
+        allow write: if isHost();
+      }
+
+      // Les pioches, toutes les mains et qui a joué quelle carte : réservé au modo.
+      match /deal/{d} {
+        allow read, write: if isHost();
+      }
+
+      // Les cartes jouées : lisibles par leur auteur et par le modo, qui les pose sur la table sans les noms.
+      // On ne joue que des cartes de sa main, à la manche en cours, et jamais quand on est le juge.
+      match /plays/{pid} {
+        allow get: if signedIn() && (isHost() || pid.matches('.*_' + request.auth.uid));
+        allow list: if isHost();
+        allow create, update: if isPlayer()
+          && request.resource.data.uid == request.auth.uid
+          && pid == request.resource.data.gameId + '_' + string(request.resource.data.round) + '_' + request.auth.uid
+          && thisRound(request.resource.data)
+          && room().step == 'answer'
+          && request.auth.uid in room().order
+          && request.auth.uid != room().judgeUid
+          && request.resource.data.cards is list
+          && request.resource.data.cards.size() == room().blanks
+          && request.resource.data.cards.toSet().size() == room().blanks
+          && myHand().gameId == room().gameId
+          && myHand().round == room().round
+          && myHand().hand.hasAll(request.resource.data.cards);
+        allow delete: if isHost();
+      }
+
+      // Le choix du juge (ou du modo, si le juge ne répond plus), parmi les réponses posées sur la table.
+      match /picks/{pid} {
+        allow read: if signedIn();
+        allow create, update: if signedIn()
+          && (request.auth.uid == room().judgeUid || isHost())
+          && pid == room().gameId + '_' + string(room().round)
+          && thisRound(request.resource.data)
+          && room().mode == 'judge'
+          && room().step == 'pick'
+          && request.resource.data.key in room().keys;
+        allow delete: if isHost();
+      }
+
+      // Variante « tout le monde vote » : un vote par joueur de la manche, tant que le résultat n'est pas tombé.
+      match /votes/{vid} {
+        allow read: if signedIn();
+        allow create, update: if isPlayer()
+          && request.resource.data.voter == request.auth.uid
+          && vid == request.resource.data.gameId + '_' + string(request.resource.data.round) + '_' + request.auth.uid
+          && thisRound(request.resource.data)
+          && room().mode == 'vote'
+          && room().step == 'pick'
+          && request.auth.uid in room().order
+          && request.resource.data.key in room().keys;
+        allow delete: if isHost();
+      }
+
+      // Gage ou vérité : à la fin de la partie, chaque joueur de la partie choisit pour soi, une seule fois.
+      match /choices/{cid} {
+        allow read: if signedIn();
+        allow create: if isPlayer()
+          && request.resource.data.uid == request.auth.uid
+          && cid == room().gameId + '_' + request.auth.uid
+          && request.resource.data.gameId == room().gameId
+          && room().phase == 'end'
+          && request.auth.uid in room().order
+          && request.resource.data.kind in ['dare', 'truth'];
+        allow delete: if isHost();
+      }
+    }
+
+    /* ===================== Perudo ===================== */
+    match /pdRooms/{code} {
+      function room() { return get(/databases/$(database)/documents/pdRooms/$(code)).data; }
+      function isHost() { return signedIn() && room().hostUid == request.auth.uid; }
+      function isPlayer() { return signedIn() && exists(/databases/$(database)/documents/pdRooms/$(code)/players/$(request.auth.uid)); }
+      // Le modo a quitté la table, ou son téléphone ne donne plus signe de vie depuis 1 minute.
+      function hostGone(h) {
+        let p = /databases/$(database)/documents/pdRooms/$(code)/players/$(h);
+        return !exists(p) || !('seen' in get(p).data) || get(p).data.seen < request.time - duration.value(60, 's');
+      }
+
+      allow get: if signedIn();
+      allow list: if false;
+      allow create: if signedIn()
+        && code.matches('^[A-Z0-9]{4}$')
+        && request.resource.data.hostUid == request.auth.uid;
+      // Seul le modo règle, lance les dés et fait avancer la partie ; il peut passer son rôle à un joueur à table.
+      // Si le modo a disparu, un joueur à table peut prendre sa place (et rien d'autre dans la même écriture).
+      allow update: if signedIn() && (
+        (resource.data.hostUid == request.auth.uid
+          && (request.resource.data.hostUid == resource.data.hostUid
+            || exists(/databases/$(database)/documents/pdRooms/$(code)/players/$(request.resource.data.hostUid))))
+        || (isPlayer()
+          && request.resource.data.hostUid == request.auth.uid
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['hostUid', 'touchedAt'])
+          && hostGone(resource.data.hostUid)));
+      allow delete: if signedIn() && resource.data.hostUid == request.auth.uid;
+
+      match /players/{uid} {
+        allow read: if signedIn();
+        allow create, update: if signedIn() && request.auth.uid == uid
+          && request.resource.data.nick is string
+          && request.resource.data.nick.size() >= 1 && request.resource.data.nick.size() <= 18
+          && request.resource.data.color is string && request.resource.data.color.size() <= 9
+          && (request.resource.data.get('mod', false) == false || room().hostUid == request.auth.uid);
+        allow delete: if signedIn() && (request.auth.uid == uid || isHost());
+      }
+
+      // Gages maison : un gage n'est lisible que par celui qui l'a écrit et par le modo, qui seul peut le valider (ok).
+      match /custom/{cid} {
+        allow read: if signedIn() && (isHost() || resource.data.by == request.auth.uid);
+        allow create: if isPlayer()
+          && request.resource.data.by == request.auth.uid
+          && request.resource.data.kind in ['dare', 'truth']
+          && request.resource.data.text is string && request.resource.data.text.size() >= 3 && request.resource.data.text.size() <= 140
+          && (request.resource.data.get('ok', false) == false || isHost());
+        allow update: if isHost() && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['ok']);
+        allow delete: if signedIn() && (resource.data.by == request.auth.uid || isHost());
+      }
+
+      // Les dés de chacun, sous son gobelet : lancés par le modo, lisibles uniquement par leur propriétaire.
+      match /secret/{uid} {
+        allow read: if signedIn() && request.auth.uid == uid;
+        allow write: if isHost();
+      }
+
+      // Tous les gobelets de la manche : réservé au modo.
+      match /deal/{d} {
+        allow read, write: if isHost();
+      }
+
+      // Une annonce, un dudo ou un calza : un seul coup par tour, écrit par le joueur dont c'est le tour, impossible à modifier.
+      match /moves/{mid} {
+        allow read: if signedIn();
+        allow create: if isPlayer()
+          && room().phase == 'play'
+          && room().step == 'bid'
+          && room().turnUid == request.auth.uid
+          && request.resource.data.uid == request.auth.uid
+          && mid == room().gameId + '_' + string(room().seq)
+          && request.resource.data.gameId == room().gameId
+          && request.resource.data.seq == room().seq
+          && request.resource.data.kind in ['bid', 'dudo', 'calza']
+          && (request.resource.data.kind != 'bid'
+            || (request.resource.data.q is int && request.resource.data.q >= 1 && request.resource.data.q <= 60
+              && request.resource.data.f is int && request.resource.data.f >= 1 && request.resource.data.f <= 6));
+        allow delete: if isHost();
+      }
+
+      // Gage ou vérité : à la fin de la partie, chaque joueur de la partie choisit pour soi, une seule fois.
+      match /choices/{cid} {
+        allow read: if signedIn();
+        allow create: if isPlayer()
+          && request.resource.data.uid == request.auth.uid
+          && cid == room().gameId + '_' + request.auth.uid
+          && request.resource.data.gameId == room().gameId
+          && room().phase == 'end'
+          && request.auth.uid in room().order
+          && request.resource.data.kind in ['dare', 'truth'];
+        allow delete: if isHost();
+      }
+    }
+
+    /* ===================== Qui suis-je ? ===================== */
+    match /qsRooms/{code} {
+      function room() { return get(/databases/$(database)/documents/qsRooms/$(code)).data; }
+      // La partie telle qu'elle sera après l'écriture : le modo colle les post-it dans la même écriture que le lancement.
+      function roomAfter() { return getAfter(/databases/$(database)/documents/qsRooms/$(code)).data; }
+      function isHost() { return signedIn() && room().hostUid == request.auth.uid; }
+      function isPlayer() { return signedIn() && exists(/databases/$(database)/documents/qsRooms/$(code)/players/$(request.auth.uid)); }
+      // Le modo a quitté la partie, ou son téléphone ne donne plus signe de vie depuis 1 minute.
+      function hostGone(h) {
+        let p = /databases/$(database)/documents/qsRooms/$(code)/players/$(h);
+        return !exists(p) || !('seen' in get(p).data) || get(p).data.seen < request.time - duration.value(60, 's');
+      }
+
+      allow get: if signedIn();
+      allow list: if false;
+      allow create: if signedIn()
+        && code.matches('^[A-Z0-9]{4}$')
+        && request.resource.data.hostUid == request.auth.uid;
+      // Seul le modo règle, lance et fait avancer la partie ; il peut passer son rôle à un joueur.
+      // Si le modo a disparu, un joueur peut prendre sa place (et rien d'autre dans la même écriture).
+      allow update: if signedIn() && (
+        (resource.data.hostUid == request.auth.uid
+          && (request.resource.data.hostUid == resource.data.hostUid
+            || exists(/databases/$(database)/documents/qsRooms/$(code)/players/$(request.resource.data.hostUid))))
+        || (isPlayer()
+          && request.resource.data.hostUid == request.auth.uid
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['hostUid', 'touchedAt'])
+          && hostGone(resource.data.hostUid)));
+      allow delete: if signedIn() && resource.data.hostUid == request.auth.uid;
+
+      match /players/{uid} {
+        allow read: if signedIn();
+        allow create, update: if signedIn() && request.auth.uid == uid
+          && request.resource.data.nick is string
+          && request.resource.data.nick.size() >= 1 && request.resource.data.nick.size() <= 18
+          && request.resource.data.color is string && request.resource.data.color.size() <= 9
+          && (request.resource.data.get('mod', false) == false || room().hostUid == request.auth.uid);
+        allow delete: if signedIn() && (request.auth.uid == uid || isHost());
+      }
+
+      // Une photo, réduite par le téléphone : une image JPEG, PNG ou WebP de moins de 150 000 caractères.
+      function picOk(d) {
+        return !('pic' in d)
+          || (d.pic is string && d.pic.size() <= 150000 && d.pic.matches('data:image/(jpeg|png|webp);base64,[A-Za-z0-9+/=]+'));
+      }
+
+      // Persos et gages maison : lisibles par leur auteur et par le modo seulement (ils arrivent par surprise) ; seul le modo les valide (ok).
+      // Un perso maison peut avoir sa photo.
+      match /custom/{cid} {
+        allow read: if signedIn() && (isHost() || resource.data.by == request.auth.uid);
+        allow create: if isPlayer()
+          && request.resource.data.by == request.auth.uid
+          && request.resource.data.kind in ['who', 'dare', 'truth']
+          && request.resource.data.text is string && request.resource.data.text.size() >= 2 && request.resource.data.text.size() <= 140
+          && (!('pic' in request.resource.data) || request.resource.data.kind == 'who')
+          && picOk(request.resource.data)
+          && (request.resource.data.get('ok', false) == false || isHost());
+        allow update: if isHost() && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['ok']);
+        allow delete: if signedIn() && (resource.data.by == request.auth.uid || isHost());
+      }
+
+      // Le post-it de chacun, cards/{partie}_{joueur} : écrit par quelqu'un d'autre que lui, lisible par tous les autres joueurs,
+      // jamais par lui-même avant qu'il l'ait trouvé ou que la partie soit finie. Impossible à modifier une fois collé.
+      // Quand les joueurs choisissent les persos, seul celui que le tirage a désigné écrit celui d'un joueur.
+      match /cards/{cid} {
+        allow get: if signedIn() && (
+          (isPlayer() && cid.split('_')[1] != request.auth.uid)
+          || cid.split('_')[0] != room().gameId
+          || room().phase == 'end'
+          || cid.split('_')[1] in room().get('found', []));
+        allow list: if false;
+        allow create: if isPlayer()
+          && cid.split('_')[1] != request.auth.uid
+          && request.resource.data.uid == cid.split('_')[1]
+          && cid == request.resource.data.gameId + '_' + request.resource.data.uid
+          && request.resource.data.by == request.auth.uid
+          && request.resource.data.name is string
+          && request.resource.data.name.size() >= 1 && request.resource.data.name.size() <= 60
+          && request.resource.data.get('alt', []) is list && request.resource.data.get('alt', []).size() <= 6
+          && picOk(request.resource.data)
+          && roomAfter().phase == 'play'
+          && request.resource.data.gameId == roomAfter().gameId
+          && request.resource.data.uid in roomAfter().order
+          && (roomAfter().step != 'pick' || roomAfter().givers[request.resource.data.uid] == request.auth.uid);
+        allow delete: if isHost();
+      }
+
+      // Une question, une proposition ou « je passe » : un seul coup par tour, écrit par le joueur dont c'est le tour, impossible à modifier.
+      // Une proposition est écrite, sauf avec l'option « Questions à l'oral » (oral).
+      match /moves/{mid} {
+        allow read: if signedIn();
+        allow create: if isPlayer()
+          && room().phase == 'play'
+          && room().step == 'ask'
+          && room().turnUid == request.auth.uid
+          && request.resource.data.uid == request.auth.uid
+          && mid == room().gameId + '_' + string(room().seq)
+          && request.resource.data.gameId == room().gameId
+          && request.resource.data.seq == room().seq
+          && request.resource.data.kind in ['q', 'guess', 'pass']
+          && request.resource.data.text is string
+          && request.resource.data.text.size() <= 120
+          && (request.resource.data.kind != 'guess' || request.resource.data.text.size() >= 1 || room().get('oral', false) == true);
+        allow delete: if isHost();
+      }
+
+      // Oui, non ou je ne sais pas : chaque joueur de la partie répond pour soi à la question en cours, jamais à la sienne.
+      match /votes/{vid} {
+        allow read: if signedIn();
+        allow create, update: if isPlayer()
+          && request.resource.data.voter == request.auth.uid
+          && vid == request.resource.data.gameId + '_' + string(request.resource.data.seq) + '_' + request.auth.uid
+          && room().phase == 'play'
+          && room().step == 'vote'
+          && request.resource.data.gameId == room().gameId
+          && request.resource.data.seq == room().seq
+          && request.auth.uid in room().order
+          && request.auth.uid != room().turnUid
+          && request.resource.data.v in ['yes', 'no', 'idk'];
+        allow delete: if isHost();
+      }
+
+      // Gage ou vérité : à la fin de la partie, chaque joueur de la partie choisit pour soi, une seule fois.
+      match /choices/{cid} {
+        allow read: if signedIn();
+        allow create: if isPlayer()
+          && request.resource.data.uid == request.auth.uid
+          && cid == room().gameId + '_' + request.auth.uid
+          && request.resource.data.gameId == room().gameId
+          && room().phase == 'end'
+          && request.auth.uid in room().order
+          && request.resource.data.kind in ['dare', 'truth'];
+        allow delete: if isHost();
+      }
+    }
+
+    /* ===================== Poker ===================== */
+    match /pkRooms/{code} {
+      function room() { return get(/databases/$(database)/documents/pkRooms/$(code)).data; }
+      function isHost() { return signedIn() && room().hostUid == request.auth.uid; }
+      function isPlayer() { return signedIn() && exists(/databases/$(database)/documents/pkRooms/$(code)/players/$(request.auth.uid)); }
+      // Le modo a quitté la table, ou son téléphone ne donne plus signe de vie depuis 1 minute.
+      function hostGone(h) {
+        let p = /databases/$(database)/documents/pkRooms/$(code)/players/$(h);
+        return !exists(p) || !('seen' in get(p).data) || get(p).data.seen < request.time - duration.value(60, 's');
+      }
+
+      allow get: if signedIn();
+      allow list: if false;
+      allow create: if signedIn()
+        && code.matches('^[A-Z0-9]{4}$')
+        && request.resource.data.hostUid == request.auth.uid;
+      // Seul le modo règle, distribue et fait avancer la partie ; il peut passer son rôle à un joueur à table.
+      // Si le modo a disparu, un joueur à table peut prendre sa place (et rien d'autre dans la même écriture).
+      allow update: if signedIn() && (
+        (resource.data.hostUid == request.auth.uid
+          && (request.resource.data.hostUid == resource.data.hostUid
+            || exists(/databases/$(database)/documents/pkRooms/$(code)/players/$(request.resource.data.hostUid))))
+        || (isPlayer()
+          && request.resource.data.hostUid == request.auth.uid
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['hostUid', 'touchedAt'])
+          && hostGone(resource.data.hostUid)));
+      allow delete: if signedIn() && resource.data.hostUid == request.auth.uid;
+
+      match /players/{uid} {
+        allow read: if signedIn();
+        allow create, update: if signedIn() && request.auth.uid == uid
+          && request.resource.data.nick is string
+          && request.resource.data.nick.size() >= 1 && request.resource.data.nick.size() <= 18
+          && request.resource.data.color is string && request.resource.data.color.size() <= 9
+          && (request.resource.data.get('mod', false) == false || room().hostUid == request.auth.uid);
+        allow delete: if signedIn() && (request.auth.uid == uid || isHost());
+      }
+
+      // Gages maison : un gage n'est lisible que par celui qui l'a écrit et par le modo, qui seul peut le valider (ok).
+      match /custom/{cid} {
+        allow read: if signedIn() && (isHost() || resource.data.by == request.auth.uid);
+        allow create: if isPlayer()
+          && request.resource.data.by == request.auth.uid
+          && request.resource.data.kind in ['dare', 'truth']
+          && request.resource.data.text is string && request.resource.data.text.size() >= 3 && request.resource.data.text.size() <= 140
+          && (request.resource.data.get('ok', false) == false || isHost());
+        allow update: if isHost() && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['ok']);
+        allow delete: if signedIn() && (resource.data.by == request.auth.uid || isHost());
+      }
+
+      // Les deux cartes de chacun : distribuées par le modo, lisibles uniquement par leur propriétaire.
+      match /secret/{uid} {
+        allow read: if signedIn() && request.auth.uid == uid;
+        allow write: if isHost();
+      }
+
+      // Le paquet mélangé (toutes les mains et les cartes du tableau à venir) : réservé au modo.
+      match /deal/{d} {
+        allow read, write: if isHost();
+      }
+
+      // Le résumé de chaque main jouée (gains, cartes abattues) : écrit par le modo, lu par tous pour le classement.
+      match /hands/{hid} {
+        allow read: if signedIn();
+        allow write: if isHost();
+      }
+
+      // Se coucher, parole, suivre, relancer ou tapis : un seul coup par tour, écrit par le joueur dont c'est le tour, impossible à modifier.
+      match /moves/{mid} {
+        allow read: if signedIn();
+        allow create: if isPlayer()
+          && room().phase == 'play'
+          && room().step == 'bet'
+          && room().turnUid == request.auth.uid
+          && request.resource.data.uid == request.auth.uid
+          && mid == room().gameId + '_' + string(room().seq)
+          && request.resource.data.gameId == room().gameId
+          && request.resource.data.seq == room().seq
+          && request.resource.data.kind in ['fold', 'check', 'call', 'raise', 'allin']
+          && (request.resource.data.kind != 'raise'
+            || (request.resource.data.to is int && request.resource.data.to >= 1 && request.resource.data.to <= 100000000));
+        allow delete: if isHost();
+      }
+
+      // Gage ou vérité : à la fin de la partie, chaque joueur de la partie choisit pour soi, une seule fois.
+      match /choices/{cid} {
+        allow read: if signedIn();
+        allow create: if isPlayer()
+          && request.resource.data.uid == request.auth.uid
+          && cid == room().gameId + '_' + request.auth.uid
+          && request.resource.data.gameId == room().gameId
+          && room().phase == 'end'
+          && request.auth.uid in room().order
+          && request.resource.data.kind in ['dare', 'truth'];
+        allow delete: if isHost();
+      }
+    }
+
+    /* ===================== Kems ===================== */
+    match /kmRooms/{code} {
+      function room() { return get(/databases/$(database)/documents/kmRooms/$(code)).data; }
+      function isHost() { return signedIn() && room().hostUid == request.auth.uid; }
+      function isPlayer() { return signedIn() && exists(/databases/$(database)/documents/kmRooms/$(code)/players/$(request.auth.uid)); }
+      // Le modo a quitté la partie, ou son téléphone ne donne plus signe de vie depuis 1 minute.
+      function hostGone(h) {
+        let p = /databases/$(database)/documents/kmRooms/$(code)/players/$(h);
+        return !exists(p) || !('seen' in get(p).data) || get(p).data.seen < request.time - duration.value(60, 's');
+      }
+
+      allow get: if signedIn();
+      allow list: if false;
+      allow create: if signedIn()
+        && code.matches('^[A-Z0-9]{4}$')
+        && request.resource.data.hostUid == request.auth.uid;
+      // Seul le modo règle, distribue et applique les échanges ; il peut passer son rôle à un joueur.
+      // Si le modo a disparu, un joueur peut prendre sa place (et rien d'autre dans la même écriture).
+      allow update: if signedIn() && (
+        (resource.data.hostUid == request.auth.uid
+          && (request.resource.data.hostUid == resource.data.hostUid
+            || exists(/databases/$(database)/documents/kmRooms/$(code)/players/$(request.resource.data.hostUid))))
+        || (isPlayer()
+          && request.resource.data.hostUid == request.auth.uid
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['hostUid', 'touchedAt'])
+          && hostGone(resource.data.hostUid)));
+      allow delete: if signedIn() && resource.data.hostUid == request.auth.uid;
+
+      // Chaque joueur écrit sa fiche (pseudo, couleur, présence, « Rien pour moi »).
+      match /players/{uid} {
+        allow read: if signedIn();
+        allow create, update: if signedIn() && request.auth.uid == uid
+          && request.resource.data.nick is string
+          && request.resource.data.nick.size() >= 1 && request.resource.data.nick.size() <= 18
+          && request.resource.data.color is string && request.resource.data.color.size() <= 9
+          && (request.resource.data.get('mod', false) == false || room().hostUid == request.auth.uid);
+        allow delete: if signedIn() && (request.auth.uid == uid || isHost());
+      }
+
+      // Gages maison : un gage n'est lisible que par celui qui l'a écrit et par le modo, qui seul peut le valider (ok).
+      match /custom/{cid} {
+        allow read: if signedIn() && (isHost() || resource.data.by == request.auth.uid);
+        allow create: if isPlayer()
+          && request.resource.data.by == request.auth.uid
+          && request.resource.data.kind in ['dare', 'truth']
+          && request.resource.data.text is string && request.resource.data.text.size() >= 3 && request.resource.data.text.size() <= 140
+          && (request.resource.data.get('ok', false) == false || isHost());
+        allow update: if isHost() && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['ok']);
+        allow delete: if signedIn() && (resource.data.by == request.auth.uid || isHost());
+      }
+
+      // Les quatre cartes de chacun et le signe secret de son équipe : écrits par le modo, lisibles uniquement par leur propriétaire.
+      match /secret/{uid} {
+        allow read: if signedIn() && request.auth.uid == uid;
+        allow write: if isHost();
+      }
+
+      // Toutes les mains, le paquet, la défausse et les signes de toutes les équipes : réservés au modo.
+      match /deal/{d} {
+        allow read, write: if isHost();
+      }
+
+      // Le résumé de chaque manche (qui a annoncé quoi, les carrés) : écrit par le modo, lu par tous pour le classement.
+      match /rounds/{rid} {
+        allow read: if signedIn();
+        allow write: if isHost();
+      }
+
+      // Un échange, un Kems ou un Contre, pendant la manche : écrit par un joueur de la partie pour lui-même,
+      // horodaté par le serveur (c'est l'ordre d'arrivée qui départage), impossible à modifier. Le modo l'applique puis l'efface.
+      match /moves/{mid} {
+        allow read: if signedIn();
+        allow create: if isPlayer()
+          && room().phase == 'play'
+          && room().step in ['look', 'swap']
+          && request.auth.uid in room().order
+          && request.resource.data.uid == request.auth.uid
+          && mid.split('_').size() == 3
+          && mid.split('_')[0] == room().gameId
+          && mid.split('_')[1] == request.auth.uid
+          && request.resource.data.gameId == room().gameId
+          && request.resource.data.round == room().round
+          && request.resource.data.ts == request.time
+          && request.resource.data.kind in ['swap', 'kems', 'contre']
+          && (request.resource.data.kind != 'swap'
+            || (room().step == 'swap'
+              && request.resource.data.give is int && request.resource.data.give >= 0 && request.resource.data.give <= 51
+              && request.resource.data.take is int && request.resource.data.take >= 0 && request.resource.data.take <= 51))
+          && (request.resource.data.kind != 'contre'
+            || (request.resource.data.target is string
+              && request.resource.data.target in room().order
+              && request.resource.data.target != request.auth.uid));
+        allow delete: if isHost();
+      }
+
+      // Gage ou vérité : à la fin de la partie, chaque joueur de la partie choisit pour soi, une seule fois.
+      match /choices/{cid} {
+        allow read: if signedIn();
+        allow create: if isPlayer()
+          && request.resource.data.uid == request.auth.uid
+          && cid == room().gameId + '_' + request.auth.uid
+          && request.resource.data.gameId == room().gameId
+          && room().phase == 'end'
+          && request.auth.uid in room().order
+          && request.resource.data.kind in ['dare', 'truth'];
+        allow delete: if isHost();
+      }
+    }
+  }
+}

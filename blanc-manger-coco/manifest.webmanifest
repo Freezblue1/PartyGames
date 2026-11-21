@@ -1,0 +1,17 @@
+{
+  "name": "Blanc-manger coco",
+  "short_name": "Blanc-manger",
+  "description": "Le jeu de cartes à trous, chacun sur son téléphone : complète la phrase avec la réponse la plus drôle, ou la pire.",
+  "lang": "fr",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#F0566B",
+  "theme_color": "#F0566B",
+  "icons": [
+    { "src": "icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}

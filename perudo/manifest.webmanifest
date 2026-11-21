@@ -1,0 +1,17 @@
+{
+  "name": "Perudo",
+  "short_name": "Perudo",
+  "description": "Le jeu de dés et de bluff, chacun sur son téléphone : tes dés restent sous ton gobelet, à toi d'annoncer, de bluffer ou de crier Dudo.",
+  "lang": "fr",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#1F9E93",
+  "theme_color": "#1F9E93",
+  "icons": [
+    { "src": "icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}

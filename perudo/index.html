@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#1F9E93" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#0D1716" media="(prefers-color-scheme: dark)">
+<title>Perudo</title>
+<meta name="description" content="Le jeu de dés et de bluff, chacun sur son téléphone : tes dés restent sous ton gobelet, à toi d'annoncer, de bluffer ou de crier Dudo.">
+<link rel="icon" href="icon-192.png" type="image/png">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icon-192.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Perudo">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Titan+One&family=Onest:wght@400;500;600;700;800&display=swap">
+<link rel="stylesheet" href="style.css">
+<style>
+/* Retour au hub « Ce soir on joue » */
+.hub-back{max-width:520px;margin:0 auto;padding:10px 16px 0}
+.hub-back a{display:inline-flex;align-items:center;gap:6px;font:700 14px/1 var(--body,system-ui,sans-serif);color:var(--ink,currentColor);background:var(--card,transparent);border:2px solid var(--ink,currentColor);border-radius:999px;padding:8px 13px;text-decoration:none}
+.hub-back a:focus-visible{outline:3px solid var(--accent,currentColor);outline-offset:3px}
+body.tv .hub-back{display:none}
+</style>
+</head>
+<body>
+<nav class="hub-back" aria-label="Autres jeux"><a href="../">← Tous nos jeux</a></nav>
+<div class="wrap" id="app"><header class="top big"><h1 class="logo">Perudo</h1></header><section class="panel center loading">On secoue les gobelets…</section></div>
+<script type="module" src="app.js"></script>
+</body>
+</html>
