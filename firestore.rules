@@ -4,7 +4,7 @@ rules_version = '2';
 // « Loup-Garou » (collection lgRooms), « Photo Roulette » (collection prRooms), « Blanc-manger coco » (collection bmRooms),
 // « Perudo » (collection pdRooms), « Qui suis-je ? » (collection qsRooms), « Poker » (collection pkRooms) et « Kems » (collection kmRooms).
 // Ce fichier contient les règles DES NEUF JEUX : colle-le en entier dans la console, à la place de tout l'existant.
-// Chaque joueur est connecté anonymement (request.auth.uid). Le créateur d'une partie (hostUid) en est le modo.
+// Chaque joueur est connecté anonymement, ou avec son compte (request.auth.uid). Le créateur d'une partie (hostUid) en est le modo.
 service cloud.firestore {
   match /databases/{database}/documents {
 
@@ -1021,5 +1021,11 @@ service cloud.firestore {
         allow delete: if isHost();
       }
     }
+
+    /* ===================== Comptes (page d'accueil) ===================== */
+    // Pseudos, mots de passe chiffrés et connexions déjà utilisées : seul le serveur des comptes
+    // (fonction Netlify, avec le compte de service) y touche. Aucun téléphone ne peut les lire ni les écrire.
+    match /accounts/{id} { allow read, write: if false; }
+    match /accountIps/{id} { allow read, write: if false; }
   }
 }

@@ -1410,7 +1410,13 @@ async function boot() {
   render();
   try { await loadFirebase(); }
   catch { M.mode = "fatal"; M.fatal = "Impossible de charger le jeu en ligne. Vérifie ta connexion internet."; render(); return; }
-  try { M.me = (await F.signInAnonymously(AUTH)).user.uid; }
+  try {
+    // Keep the account a player signed into on the home page; otherwise play anonymously.
+    await AUTH.authStateReady();
+    const u = AUTH.currentUser || (await F.signInAnonymously(AUTH)).user;
+    M.me = u.uid;
+    if (!u.isAnonymous && !M.drafts.nick) M.drafts.nick = String((await u.getIdTokenResult().catch(() => null))?.claims.pseudo || "").slice(0, 18);
+  }
   catch (e) {
     M.mode = "fatal";
     M.fatal = e && (e.code === "auth/operation-not-allowed" || e.code === "auth/admin-restricted-operation")

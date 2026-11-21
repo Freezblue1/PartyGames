@@ -11,3 +11,7 @@ desktop.ini
 
 # Empty lockfile npm leaves here when running inkwell scripts
 /package-lock.json
+
+# Firebase service account keys: they go in Netlify environment variables, never in the repo
+*firebase-adminsdk*.json
+*service-account*.json

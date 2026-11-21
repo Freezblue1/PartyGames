@@ -19,9 +19,39 @@
 <div class="wrap">
 
   <header class="hero">
+    <div class="bar"><button class="acct" id="acct" type="button" aria-haspopup="dialog">Se connecter</button></div>
     <h1 class="logo">Ce soir<br><span class="hl">on joue</span></h1>
-    <p class="tagline">Neuf jeux de soirée, chacun sur son téléphone. Pas de compte, rien à installer.</p>
+    <p class="tagline">Neuf jeux de soirée, chacun sur son téléphone. Compte facultatif, rien à installer.</p>
   </header>
+
+  <dialog class="sheet" id="acctDlg" aria-labelledby="acctTitle">
+    <div class="sheet-top">
+      <h2 class="sheet-title" id="acctTitle">Mon compte</h2>
+      <button class="x" type="button" data-close aria-label="Fermer">×</button>
+    </div>
+
+    <form id="acctForm" class="stack" novalidate>
+      <div class="seg" role="group" aria-label="Choix">
+        <button type="button" data-mode="connexion" aria-pressed="true">Se connecter</button>
+        <button type="button" data-mode="inscription" aria-pressed="false">Créer un compte</button>
+      </div>
+      <label class="field"><span>Pseudo</span>
+        <input id="pseudo" aria-label="Pseudo" name="username" type="text" autocomplete="username" autocapitalize="off" spellcheck="false" maxlength="18" required>
+      </label>
+      <label class="field"><span>Mot de passe</span>
+        <span class="pw"><input id="pass" aria-label="Mot de passe" name="password" type="password" autocomplete="current-password" maxlength="128" required><button type="button" class="show" id="showPass" aria-pressed="false">Afficher</button></span>
+      </label>
+      <p class="hint" id="modeHint">Ton pseudo sera proposé tout seul dans tous les jeux, sur tous tes appareils.</p>
+      <p class="err" id="acctErr" role="alert" hidden></p>
+      <button class="btn primary big" id="acctGo" type="submit">Se connecter</button>
+    </form>
+
+    <div id="acctIn" class="stack" hidden>
+      <p class="hello">Salut <b id="acctName"></b> !</p>
+      <p class="hint">Ton pseudo est proposé tout seul dans tous les jeux. Tu peux toujours le changer avant de rejoindre une partie.</p>
+      <button class="btn big" id="logout" type="button">Se déconnecter</button>
+    </div>
+  </dialog>
 
   <main class="games">
 
@@ -156,5 +186,6 @@
     }
   });
 </script>
+<script type="module" src="compte.js"></script>
 </body>
 </html>

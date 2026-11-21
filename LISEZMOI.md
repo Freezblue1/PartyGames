@@ -23,8 +23,10 @@ Chaque dossier a son propre `LISEZMOI.md` qui explique le jeu (fichiers, déroul
 | Fichier | Rôle |
 |---|---|
 | `index.html`, `style.css` | La page d'accueil |
+| `compte.js`, `config.js` | Le bouton « Se connecter » de l'accueil et la config Firebase qu'il utilise |
+| `netlify/functions/compte.mjs`, `netlify/lib/comptes.mjs` | Le serveur des comptes (fonction Netlify, aucune dépendance à installer) |
 | `firestore.rules` | Les règles de sécurité **de tous les jeux**, à coller dans la console Firebase |
-| `netlify.toml` | Dit à Netlify de publier ce dossier tel quel (pas de build) |
+| `netlify.toml` | Dit à Netlify de publier ce dossier tel quel (pas de build) et où trouver la fonction des comptes |
 | `.gitignore` | Garde `inkwell` (projet à part) et `.claude` hors du dépôt |
 
 ## 1. Règles Firebase
@@ -52,6 +54,38 @@ Passe par GitHub, qui ne reçoit que les jeux.
 
 Les jeux installés comme appli sur les téléphones prennent la nouvelle version tout seuls.
 
+## 3. Activer les comptes (une seule fois)
+
+Sur l'accueil, chacun peut créer un compte avec un **pseudo** et un **mot de passe**, sans e-mail.
+Connecté, ton pseudo est proposé tout seul dans tous les jeux, sur tous tes appareils. Sans compte, on joue comme avant.
+
+Le serveur des comptes a besoin d'une clé du projet Firebase :
+
+1. Console Firebase › roue dentée › **Paramètres du projet** › onglet **Comptes de service** › **Générer une nouvelle clé privée**.
+   Un fichier `.json` se télécharge. Il donne tous les droits sur le projet : ne l'envoie à personne et ne le mets pas dans le dossier.
+2. Netlify › ton site › **Site configuration › Environment variables** › **Add a variable**, deux fois
+   (coche *Contains secret values* et le scope *Functions*) :
+   - `FIREBASE_CLIENT_EMAIL` : la valeur de `client_email` dans le fichier (finit par `iam.gserviceaccount.com`).
+   - `FIREBASE_PRIVATE_KEY` : la valeur de `private_key`, en entier, de `-----BEGIN PRIVATE KEY-----` à `-----END PRIVATE KEY-----`.
+3. **Deploys › Trigger deploy › Deploy site** pour que la fonction lise les variables.
+4. Recolle `firestore.rules` dans Firebase (étape 1) : il verrouille les collections des comptes.
+5. Une fois les variables enregistrées, tu peux supprimer le fichier `.json` de ton ordi.
+
+Tant que ce n'est pas fait, le bouton répond « Les comptes ne sont pas encore configurés sur le serveur ».
+
+**Règles des comptes**
+
+- Pseudo : 3 à 18 caractères (lettres, chiffres, `.` `_` `-`), sans tenir compte des majuscules (`Léa` et `léa` sont le même compte).
+- Mot de passe : 6 caractères au moins. Il est stocké chiffré (scrypt), jamais en clair.
+- **Un seul compte par connexion internet.** L'IP n'est pas stockée : seulement une empreinte, impossible à retourner.
+  En IPv6, c'est tout le bloc de la box (/64) qui compte, sinon il suffirait d'attendre que l'adresse change.
+  Attention : tout le monde sur le même Wi-Fi partage la même IP, et certains opérateurs mobiles mettent beaucoup d'abonnés derrière une seule IP.
+  En soirée, crée les comptes en 4G/5G, chacun de son côté, plutôt que sur le Wi-Fi.
+- Après 10 mots de passe faux d'affilée, le compte est bloqué 15 minutes.
+- Mot de passe oublié : il n'y a pas d'e-mail pour le récupérer. Dans Firestore, collection `accounts`, supprime le document
+  dont le champ `pseudo` correspond ; la personne pourra recréer le compte. Pour libérer la connexion qui a servi à le créer,
+  supprime aussi, dans `accountIps`, le document dont le champ `account` porte ce pseudo.
+
 ## Tester en local
 
 ```bash
@@ -59,6 +93,7 @@ python -m http.server 5518
 ```
 
 Puis ouvre http://localhost:5518. `localhost` est déjà autorisé dans Firebase.
+Les jeux marchent, mais pas les comptes : ils ont besoin de la fonction Netlify, qui ne tourne que sur le site en ligne.
 
 ## Ajouter un jeu
 
