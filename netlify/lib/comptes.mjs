@@ -1,10 +1,14 @@
-// Comptes « Ce soir on joue » : un pseudo, un mot de passe, un seul compte par adresse IP.
+// Comptes « Ce soir on joue » : un pseudo, un mot de passe, un seul compte par téléphone.
+// Le téléphone est reconnu par un identifiant tiré au hasard et gardé dans son navigateur (compte.js).
+// Un script pourrait inventer un identifiant à chaque fois : la connexion internet est donc plafonnée
+// à IP_MAX comptes par 24 h, assez pour toute une soirée sur le même Wi-Fi.
 // Tourne dans une fonction Netlify (elle seule voit l'IP du visiteur). Aucune dépendance npm :
 // Firestore et Firebase Auth sont appelés en REST avec le compte de service du projet.
 //
 // Firestore (jamais lisible par les téléphones, voir firestore.rules) :
-//   accounts/{id}     id = sha256(pseudo en minuscules) → pseudo, uid, sel, empreinte du mot de passe, échecs
-//   accountIps/{id}   id = HMAC(IP)                     → pseudo du compte créé depuis cette connexion
+//   accounts/{id}        id = sha256(pseudo en minuscules)  → pseudo, uid, sel, empreinte du mot de passe, échecs
+//   accountDevices/{id}  id = sha256(identifiant du tél.)   → pseudo du compte créé sur ce téléphone
+//   accountIps/{id}      id = HMAC(IP)                      → nombre de comptes créés depuis `since`
 // L'IP n'est jamais stockée en clair.
 
 import { createHash, createHmac, createSign, randomBytes, scrypt as scryptCb, timingSafeEqual } from "node:crypto";
@@ -15,6 +19,8 @@ const scrypt = promisify(scryptCb);
 export const PROJECT = "qui-de-nous-7244f";
 const DOCS = `https://firestore.googleapis.com/v1/projects/${PROJECT}/databases/(default)/documents`;
 const MAX_FAILS = 10, LOCK_MS = 15 * 60 * 1000;
+const IP_MAX = 20, IP_WINDOW_MS = 24 * 3600 * 1000;
+const DEVICE_RE = /^[A-Za-z0-9-]{16,64}$/;
 
 // Pseudo : 3 à 18 caractères (la longueur d'un prénom dans les jeux), lettres, chiffres, . _ -
 const PSEUDO_RE = /^[\p{L}\p{N}._-]{3,18}$/u;
@@ -78,17 +84,21 @@ function store(cred, fetch) {
     return fetch(url, { ...init, headers: { authorization: "Bearer " + token, "content-type": "application/json", ...init.headers } });
   };
   return {
-    async get(path) {
+    // → { data, updateTime } ou null
+    async read(path) {
       const res = await call(`${DOCS}/${path}`);
       if (res.status === 404) return null;
       if (!res.ok) throw new Error("get " + res.status + " " + await res.text());
-      return dec((await res.json()).fields);
+      const j = await res.json();
+      return { data: dec(j.fields), updateTime: j.updateTime };
     },
-    // Crée tous les documents d'un coup, ou aucun si l'un d'eux existe déjà.
-    async createAll(docs) {
+    async get(path) { return (await this.read(path))?.data ?? null; },
+    // Écrit tout d'un coup, ou rien si un document a changé entre-temps.
+    // writes : [chemin, données, condition] ; condition = { exists: false } ou { updateTime } lu juste avant.
+    async commit(writes) {
       const res = await call(`${DOCS.replace(/\/documents$/, "")}/documents:commit`, {
         method: "POST",
-        body: JSON.stringify({ writes: docs.map(([path, data]) => ({ update: { name: `projects/${PROJECT}/databases/(default)/documents/${path}`, fields: encFields(data) }, currentDocument: { exists: false } })) })
+        body: JSON.stringify({ writes: writes.map(([path, data, currentDocument]) => ({ update: { name: `projects/${PROJECT}/databases/(default)/documents/${path}`, fields: encFields(data) }, currentDocument })) })
       });
       if (res.ok) return true;
       const text = await res.text();
@@ -130,34 +140,41 @@ function readInput(body) {
   return { pseudo, pass, id: sha256(pseudo.toLowerCase()) };
 }
 
-export async function signup(body, ip, { env, fetch }) {
-  const { pseudo, pass, id } = readInput(body);
+export async function signup(body, ip, { env, fetch, now = Date.now() }) {
+  const { pseudo, pass, id } = readInput(body), device = String(body?.device ?? "");
   if (!PSEUDO_RE.test(pseudo)) throw fail(400, "Le pseudo doit faire 3 à 18 caractères : lettres, chiffres, point, tiret ou tiret bas.");
   if (pass.length < PASS_MIN || pass.length > PASS_MAX) throw fail(400, `Le mot de passe doit faire au moins ${PASS_MIN} caractères.`);
+  if (!DEVICE_RE.test(device)) throw fail(400, "Ton navigateur n'arrive pas à se souvenir de ce téléphone. Quitte la navigation privée et réessaie.");
   if (!ip) throw fail(400, "Impossible de reconnaître ta connexion.");
-  const cred = credentials(env), db = store(cred, fetch), ipDoc = "accountIps/" + ipId(ip, cred);
+  const cred = credentials(env), db = store(cred, fetch);
+  const deviceDoc = "accountDevices/" + sha256("device:" + device), ipDoc = "accountIps/" + ipId(ip, cred);
 
-  const [taken, ipUsed] = await Promise.all([db.get("accounts/" + id), db.get(ipDoc)]);
+  const [taken, phone, net] = await Promise.all([db.get("accounts/" + id), db.get(deviceDoc), db.read(ipDoc)]);
   if (taken) throw fail(409, "Ce pseudo est déjà pris.");
-  if (ipUsed) throw fail(403, "Un compte a déjà été créé depuis cette connexion internet.");
+  if (phone) throw fail(403, `Ce téléphone a déjà un compte : « ${phone.account} ». Connecte-toi avec.`);
 
-  const uid = "acct_" + randomBytes(12).toString("hex"), salt = randomBytes(16).toString("hex"), now = Date.now();
-  const ok = await db.createAll([
-    ["accounts/" + id, { pseudo, uid, salt, hash: await hashPassword(pass, salt), createdAt: now, fails: 0, lockUntil: 0 }],
-    [ipDoc, { account: pseudo, createdAt: now }]
+  // Anti-robot : la fenêtre de 24 h repart de zéro une fois écoulée.
+  let since = net?.data.since ?? net?.data.createdAt ?? now, count = net?.data.count ?? (net ? 1 : 0);
+  if (now - since >= IP_WINDOW_MS) { since = now; count = 0; }
+  if (count >= IP_MAX) throw fail(429, "Trop de comptes créés depuis cette connexion aujourd'hui. Réessaie demain.");
+
+  const uid = "acct_" + randomBytes(12).toString("hex"), salt = randomBytes(16).toString("hex");
+  const ok = await db.commit([
+    ["accounts/" + id, { pseudo, uid, salt, hash: await hashPassword(pass, salt), createdAt: now, fails: 0, lockUntil: 0 }, { exists: false }],
+    [deviceDoc, { account: pseudo, createdAt: now }, { exists: false }],
+    [ipDoc, { count: count + 1, since }, net ? { updateTime: net.updateTime } : { exists: false }]
   ]);
-  if (!ok) throw fail(409, "Ce pseudo ou cette connexion vient d'être utilisé. Réessaie.");
+  if (!ok) throw fail(409, "Quelqu'un vient de créer un compte en même temps. Réessaie.");
   return { pseudo, token: customToken(cred, uid, { pseudo }) };
 }
 
-export async function login(body, { env, fetch }) {
+export async function login(body, { env, fetch, now = Date.now() }) {
   const { pseudo, pass, id } = readInput(body);
   if (!pseudo || !pass) throw fail(400, "Entre ton pseudo et ton mot de passe.");
   const cred = credentials(env), db = store(cred, fetch);
   const acct = await db.get("accounts/" + id);
   const wrong = fail(401, "Pseudo ou mot de passe incorrect.");
   if (!acct) throw wrong;
-  const now = Date.now();
   if (acct.lockUntil > now) throw fail(429, `Trop d'essais ratés. Réessaie dans ${Math.ceil((acct.lockUntil - now) / 60000)} min.`);
   if (!await checkPassword(pass, acct.salt, acct.hash)) {
     const fails = (acct.fails || 0) + 1;

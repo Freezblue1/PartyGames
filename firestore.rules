@@ -1023,9 +1023,10 @@ service cloud.firestore {
     }
 
     /* ===================== Comptes (page d'accueil) ===================== */
-    // Pseudos, mots de passe chiffrés et connexions déjà utilisées : seul le serveur des comptes
+    // Pseudos, mots de passe chiffrés, téléphones et connexions déjà utilisés : seul le serveur des comptes
     // (fonction Netlify, avec le compte de service) y touche. Aucun téléphone ne peut les lire ni les écrire.
     match /accounts/{id} { allow read, write: if false; }
+    match /accountDevices/{id} { allow read, write: if false; }
     match /accountIps/{id} { allow read, write: if false; }
   }
 }

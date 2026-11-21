@@ -8,6 +8,15 @@ const $ = id => document.getElementById(id);
 const dlg = $("acctDlg"), form = $("acctForm"), btn = $("acct"), err = $("acctErr"), go = $("acctGo");
 let auth = null, A = null, mode = "connexion", busy = false;
 
+// Identifies this phone for the "one account per phone" rule. Shared by every page of the site (same origin).
+function deviceId() {
+  try {
+    let id = localStorage.getItem("soiree-appareil");
+    if (!id) { id = crypto.randomUUID(); localStorage.setItem("soiree-appareil", id); }
+    return id;
+  } catch { return ""; }
+}
+
 const pseudoOf = async user => user && !user.isAnonymous ? String((await user.getIdTokenResult()).claims.pseudo || "") : "";
 
 async function loadAuth() {
@@ -34,7 +43,7 @@ function setMode(m) {
   go.textContent = signup ? "Créer mon compte" : "Se connecter";
   $("pass").autocomplete = signup ? "new-password" : "current-password";
   $("modeHint").textContent = signup
-    ? "3 à 18 caractères pour le pseudo, 6 au moins pour le mot de passe. Un seul compte par connexion internet."
+    ? "3 à 18 caractères pour le pseudo, 6 au moins pour le mot de passe. Un seul compte par téléphone."
     : "Ton pseudo sera proposé tout seul dans tous les jeux, sur tous tes appareils.";
   showErr("");
 }
@@ -50,7 +59,7 @@ async function submit(e) {
   const label = go.textContent; go.textContent = "Un instant…";
   try {
     if (!auth) await loadAuth();
-    const res = await fetch("/api/compte/" + mode, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ pseudo, password }) });
+    const res = await fetch("/api/compte/" + mode, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ pseudo, password, device: deviceId() }) });
     const data = await res.json().catch(() => null);
     if (!data) throw new Error(res.status === 404 || res.status === 501 ? "Les comptes ne marchent que sur le site en ligne." : "Le serveur ne répond pas. Réessaie dans un moment.");
     if (!res.ok) throw new Error(data.error || "Ça n'a pas marché. Réessaie.");

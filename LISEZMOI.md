@@ -77,14 +77,18 @@ Tant que ce n'est pas fait, le bouton répond « Les comptes ne sont pas encore 
 
 - Pseudo : 3 à 18 caractères (lettres, chiffres, `.` `_` `-`), sans tenir compte des majuscules (`Léa` et `léa` sont le même compte).
 - Mot de passe : 6 caractères au moins. Il est stocké chiffré (scrypt), jamais en clair.
-- **Un seul compte par connexion internet.** L'IP n'est pas stockée : seulement une empreinte, impossible à retourner.
-  En IPv6, c'est tout le bloc de la box (/64) qui compte, sinon il suffirait d'attendre que l'adresse change.
-  Attention : tout le monde sur le même Wi-Fi partage la même IP, et certains opérateurs mobiles mettent beaucoup d'abonnés derrière une seule IP.
-  En soirée, crée les comptes en 4G/5G, chacun de son côté, plutôt que sur le Wi-Fi.
+- **Un seul compte par téléphone.** À la création, le navigateur du téléphone reçoit un identifiant tiré au hasard,
+  gardé sur le téléphone (rien à voir avec le numéro ou le modèle). Un deuxième compte depuis ce téléphone est refusé,
+  avec le pseudo du compte existant. Plusieurs téléphones sur le même Wi-Fi peuvent chacun créer le leur.
+  Limite : un site web ne peut pas reconnaître un téléphone à coup sûr. Quelqu'un qui efface les données du site,
+  passe en navigation privée ou change de navigateur sera vu comme un nouveau téléphone. Sur iPhone, le jeu installé
+  sur l'écran d'accueil et Safari comptent aussi comme deux téléphones différents.
+- **Anti-robot** : au plus 20 comptes créés par connexion internet en 24 h (assez pour toute une soirée sur le même Wi-Fi).
+  Sans ça, un script pourrait inventer un nouvel identifiant à chaque fois. L'IP n'est pas stockée, seulement une empreinte.
 - Après 10 mots de passe faux d'affilée, le compte est bloqué 15 minutes.
 - Mot de passe oublié : il n'y a pas d'e-mail pour le récupérer. Dans Firestore, collection `accounts`, supprime le document
-  dont le champ `pseudo` correspond ; la personne pourra recréer le compte. Pour libérer la connexion qui a servi à le créer,
-  supprime aussi, dans `accountIps`, le document dont le champ `account` porte ce pseudo.
+  dont le champ `pseudo` correspond, et dans `accountDevices` celui dont le champ `account` porte ce pseudo :
+  la personne pourra recréer son compte depuis le même téléphone.
 
 ## Tester en local
 
