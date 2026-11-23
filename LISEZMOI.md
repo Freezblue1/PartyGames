@@ -26,7 +26,7 @@ Chaque dossier a son propre `LISEZMOI.md` qui explique le jeu (fichiers, déroul
 | `soiree.js`, `soiree.css` | Commun à l'accueil et aux 9 jeux : fenêtre « Mon compte » (profil, stats, sauvegardes, admin), groupes, sauvegarde et partage des parties, lecteur « Revoir » |
 | `config.js` | La config Firebase utilisée par `soiree.js` (la même que celle des jeux) |
 | `netlify/functions/compte.mjs`, `netlify/lib/comptes.mjs` | Le serveur des comptes (fonction Netlify, aucune dépendance à installer) |
-| `netlify/functions/menage.mjs` | Tâche de chaque nuit (fonction planifiée Netlify) : ferme les groupes inactifs depuis 3 jours |
+| `netlify/functions/menage.mjs` | Tâche de chaque nuit (fonction planifiée Netlify) : ferme les groupes inactifs depuis 3 jours, efface les parties sans action depuis 24 h (avec leurs joueurs, votes, photos…) et les vieux rapports de plantage |
 | `firestore.rules` | Les règles de sécurité **de tous les jeux**, à coller dans la console Firebase |
 | `netlify.toml` | Dit à Netlify de publier ce dossier tel quel (pas de build) et où trouver la fonction des comptes |
 | `.gitignore` | Garde `inkwell` (projet à part) et `.claude` hors du dépôt |
@@ -98,7 +98,13 @@ Tant que ce n'est pas fait, le bouton répond « Les comptes ne sont pas encore 
   dans ton groupe ; ton pseudo et ton téléphone redeviennent libres.
 - **Tes stats** : les stats de chaque jeu (parties, victoires, titres…) sont gardées dans ton compte et te suivent sur tous
   tes appareils (« Mon compte » › Stats, les 9 jeux d'un coup). La première fois, celles déjà sur le téléphone sont reprises.
-  Photo Roulette n'a pas de stats.
+- **Tes succès** (« Mon compte » › Profil et Stats) : 25 succès calculés à partir de tes stats, avec ta progression sur
+  ceux qui manquent. Par exemple « Première partie », « Touche-à-tout » (jouer aux 9 jeux), « Grand chelem » (gagner dans
+  les 9), « Fan de Perudo » (10 parties), « Sur le fil » (gagner un Dudo ou un Calza avec un seul dé), « Imposteur de génie »,
+  « Requin » (20 pots au Poker), « Œil de lynx » (20 bonnes réponses à Photo Roulette)… Le classement du groupe montre
+  combien chacun en a.
+- **Réactions** : dans la salle d'attente de chaque jeu, une barre d'emojis (😂 🔥 🙄 👏 😱 ❤️ 🎉 😴). Celui que tu touches
+  s'envole sur l'écran de tout le monde, avec ton nom. Pas besoin de compte.
 - **Les groupes** (accueil, « Jouer en groupe ») : crée un groupe et partage son code. Il faut un compte pour en faire partie.
   - Quand le chef entre dans une partie (il la crée, ou rejoint celle de quelqu'un), le téléphone de chaque membre ouvre
     ce jeu et rejoint la même partie tout seul.
@@ -130,6 +136,8 @@ Tant que ce n'est pas fait, le bouton répond « Les comptes ne sont pas encore 
 
   Comme le journal est construit à la fin de la partie à partir de ce que la partie a gardé, recharger la page en
   pleine partie ne fait rien perdre.
+  Pendant la lecture : vitesse ×1 / ×2 / ×4, un menu « Aller à… » pour sauter directement à une manche, et
+  **« Copier en texte »** qui copie toute la partie (manches, coups, classement) pour la coller dans la discussion du groupe.
 - **Partager** une sauvegarde : « Partager » crée un lien (copié sur ordinateur, menu de partage sur téléphone).
   N'importe qui peut revoir la partie avec, même sans compte. « Ne plus partager » coupe le lien.
 
@@ -140,6 +148,10 @@ L'admin a tous les droits : il lit et modifie toutes les données des jeux. Son 
 - **Comptes** : tous les comptes créés depuis le début (même supprimés, par l'admin ou par leur propriétaire),
   leurs sauvegardes, un nouveau mot de passe, **suspendre** (plus de connexion, la session en cours s'arrête dans l'heure,
   rien n'est effacé, « Réactiver » pour revenir) ou supprimer.
+- **Erreurs** : quand une page plante chez quelqu'un (accueil ou jeu), le message arrive ici avec le jeu, l'écran où
+  c'était (salle d'attente, partie, fin…), le navigateur et le compte. Les mêmes plantages sont regroupés, avec leur nombre
+  et la dernière fois. « Détails » montre l'endroit exact dans le code. Au plus 5 rapports par page et 30 par connexion
+  et par heure ; ils sont effacés au bout de 30 jours, ou avec « Tout effacer ».
 - **En direct** : toutes les parties des 9 jeux (en cours ou non, nombre de joueurs, dernière action), avec un lien pour
   les regarder en mode grand écran et un bouton pour les fermer ; tous les groupes, leurs membres et qui est en ligne.
 - **Firebase** : les lectures, écritures et suppressions du jour face aux limites du forfait gratuit (50 000 / 20 000 / 20 000),
@@ -161,7 +173,18 @@ Pour retirer un admin, enlève son pseudo de `ADMIN_PSEUDO` et redéploie : les 
 sur les données disparaissent à sa prochaine déconnexion.
 Supprimer un compte libère son pseudo et son téléphone ; il reste dans la liste, marqué « Supprimé ».
 
-## 6. Protection des connexions
+## 6. Ménage automatique
+
+Chaque nuit, le serveur efface :
+
+- les **parties sans aucune action depuis 24 h**, avec tout ce qu'elles contiennent (joueurs, votes, mains, photos…),
+  dans les 9 jeux. Avant, une partie abandonnée restait tant que le téléphone de son créateur ne rouvrait pas le jeu ;
+- les **groupes** où personne n'est passé depuis 3 jours ;
+- les réactions de ces parties et les rapports de plantage de plus de 30 jours.
+
+Ça garde Firestore petit, bien dans le forfait gratuit. Une partie en cours n'est jamais touchée.
+
+## 7. Protection des connexions
 
 - 10 mots de passe faux d'affilée sur un compte : ce compte est bloqué 15 minutes.
 - 30 mots de passe faux depuis une même connexion internet, sur n'importe quels comptes : cette connexion ne peut plus
@@ -185,10 +208,12 @@ Ils tournent sur l'ordi, avec les **émulateurs Firebase** : rien ne touche au v
 
 | Commande (dans `tests`) | Ce qui est vérifié | Durée |
 |---|---|---|
-| `npm run test:server` | Le serveur des comptes : inscription, un compte par téléphone, plafond anti-robot, connexion, blocage par compte et par connexion, mot de passe, suppression, admin (suspendre, usage), fermeture des groupes inactifs | quelques secondes |
+| `npm run test:server` | Le serveur des comptes : inscription, un compte par téléphone, plafond anti-robot, connexion, blocage par compte et par connexion, mot de passe, suppression, admin (suspendre, usage), rapports de plantage, ménage de la nuit (groupes, parties de plus de 24 h et tout ce qu'elles contiennent) | quelques secondes |
 | `npm run test:rules` | `firestore.rules` se charge sans erreur, et : un membre ne peut pas piloter le groupe d'un autre ni prendre la place du chef s'il est là, personne ne lit les sauvegardes d'un autre sauf partagées, personne ne fausse sa présence, les stats et données des comptes sont protégées, l'admin peut tout | ~20 s |
-| `npm run test:e2e` | Dans de vrais navigateurs (Edge) : deux joueurs, groupe, le membre suit le chef, une vraie partie de Qui de nous, sauvegardes, « Revoir », partage (ouvert sans compte), stats, qui est en ligne, classement, passer le rôle de chef ; le journal de chacun des 9 jeux sur une partie d'exemple ; mot de passe, suppression de son compte, admin (suspendre, en direct, Firebase) | ~1 min |
+| `npm run test:e2e` | Dans de vrais navigateurs (Edge) : de vraies parties jusqu'au bout de **Qui de nous** (2 joueurs, avec groupe, sauvegardes, « Revoir », vitesse, aller à, copie en texte, partage sans compte, stats, succès, qui est en ligne, classement, rôle de chef), **Perudo** (avec une réaction dans la salle d'attente), **Undercover** (3 joueurs) et **Poker**, chacune sauvegardée et revue ; le journal de chacun des 9 jeux sur une partie d'exemple et les stats de Photo Roulette ; mot de passe, suppression de son compte, admin (suspendre, erreurs, en direct, Firebase) | ~1 min 30 |
 | `npm test` | Les trois, dans l'ordre | |
+
+Pour un seul test : `npm run test:e2e -- -g Poker` (le nom ou un mot du test).
 
 Première fois : `cd tests` puis `npm install`. Les émulateurs ont besoin de Java 21 : s'il n'est pas installé,
 mets un JDK dans `tests/.jdk` (ex. le zip Temurin 21 de https://adoptium.net, décompressé là) ; `with-emulators.mjs` l'utilise tout seul.

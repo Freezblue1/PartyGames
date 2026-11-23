@@ -11,6 +11,8 @@
 //   accountIps/{id}      id = HMAC(IP)                      → nombre de comptes créés depuis `since`
 //   accountsArchive/{uid}                                   → comptes supprimés (par l'admin ou par leur propriétaire)
 //   loginIps/{id}        id = HMAC(IP)                      → mots de passe ratés depuis cette connexion (anti-essais en série)
+//   errors/{id}                                             → plantages envoyés par les pages (lus par l'admin)
+//   errorIps/{id}        id = HMAC(IP)                      → rapports envoyés depuis cette connexion (anti-inondation)
 // L'IP n'est jamais stockée en clair.
 //
 // Admin : les pseudos listés dans la variable d'environnement ADMIN_PSEUDO (séparés par des virgules)
@@ -27,6 +29,9 @@ const PROD_DOCS = `https://firestore.googleapis.com/v1/projects/${PROJECT}/datab
 const MAX_FAILS = 10, LOCK_MS = 15 * 60 * 1000;
 const LOGIN_IP_MAX = 30, LOGIN_IP_WINDOW_MS = 15 * 60 * 1000;   // ratés par connexion, tous comptes confondus
 const GROUP_IDLE_MS = 3 * 24 * 3600 * 1000;                        // un groupe où personne n'est passé depuis 3 jours est fermé
+const ROOM_IDLE_MS = 24 * 3600 * 1000;                             // une partie sans aucune action depuis 24 h est effacée
+const ERROR_KEEP_MS = 30 * 24 * 3600 * 1000, ERROR_IP_MAX = 30, ERROR_IP_WINDOW_MS = 3600 * 1000;
+export const ROOM_COLLECTIONS = ["rooms", "ucRooms", "lgRooms", "prRooms", "bmRooms", "pdRooms", "qsRooms", "pkRooms", "kmRooms"];
 const IP_MAX = 20, IP_WINDOW_MS = 24 * 3600 * 1000;
 const DEVICE_RE = /^[A-Za-z0-9-]{16,64}$/;
 
@@ -133,9 +138,24 @@ function store(cred, fetch, env = {}) {
         const res = await call(`${DOCS}/${collection}?pageSize=300${token ? "&pageToken=" + encodeURIComponent(token) : ""}`);
         if (!res.ok) throw new Error("list " + res.status + " " + await res.text());
         const j = await res.json();
-        for (const d of j.documents || []) out.push({ id: d.name.split("/").pop(), ...dec(d.fields) });
+        for (const d of j.documents || []) out.push({ id: d.name.split("/").pop(), ...dec(d.fields), _updated: Date.parse(d.updateTime) || 0 });
         token = j.nextPageToken || "";
       } while (token);
+      return out;
+    },
+    // Names of a document's sub-collections.
+    async subCollections(path) {
+      const res = await call(`${DOCS}/${path}:listCollectionIds`, { method: "POST", body: JSON.stringify({ pageSize: 100 }) });
+      if (!res.ok) throw new Error("listCollectionIds " + res.status + " " + await res.text());
+      return (await res.json()).collectionIds || [];
+    },
+    // A document and everything under it (players, votes, hands, photos…).
+    async deepPaths(path) {
+      const out = [];
+      for (const sub of await this.subCollections(path)) {
+        for (const d of await this.list(`${path}/${sub}`)) out.push(...await this.deepPaths(`${path}/${sub}/${d.id}`));
+      }
+      out.push(path);
       return out;
     },
     // Chemins des documents dont un champ texte vaut `value`
@@ -370,6 +390,48 @@ export async function closeIdleGroups({ env, fetch, now = Date.now() }) {
   return { closed };
 }
 
+// Nightly: games with no action for 24 h are deleted with everything under them, wherever their creator is.
+// (Each game's own cleanup only runs when its creator's phone opens the game again.)
+export async function closeOldRooms({ env, fetch, now = Date.now() }) {
+  const cred = credentials(env), db = store(cred, fetch, env);
+  const deleted = [];
+  for (const col of ROOM_COLLECTIONS) {
+    for (const r of await db.list(col)) {
+      const last = Math.max(r._updated || 0, r.touchedAt || 0, r.createdAt || 0);
+      if (now - last < ROOM_IDLE_MS) continue;
+      await db.removeAll(await db.deepPaths(`${col}/${r.id}`));
+      deleted.push(`${col}/${r.id}`);
+    }
+  }
+  // lobby reactions of those games, and crash reports older than 30 days
+  const stale = [
+    ...(await db.list("reactions")).filter(x => now - (x._updated || 0) >= ROOM_IDLE_MS).map(x => "reactions/" + x.id),
+    ...(await db.list("errors")).filter(x => now - (x.at || x._updated || 0) >= ERROR_KEEP_MS).map(x => "errors/" + x.id)
+  ];
+  await db.removeAll(stale);
+  return { deleted, purged: stale.length };
+}
+
+// A page crashed: keep a short report for the admin. No account needed; at most ERROR_IP_MAX per connection and hour.
+export async function report(body, ip, { env, fetch, now = Date.now() }) {
+  const cred = credentials(env), db = store(cred, fetch, env);
+  const cut = (v, n) => String(v ?? "").replace(/[\u0000-\u001f]+/g, " ").slice(0, n);
+  const message = cut(body?.message, 300).trim();
+  if (!message) throw fail(400, "Rapport vide.");
+  if (ip) {
+    const ipDoc = "errorIps/" + ipId(ip, cred), seen = await db.get(ipDoc);
+    const inWindow = seen && now - (seen.since || 0) < ERROR_IP_WINDOW_MS;
+    if (inWindow && seen.n >= ERROR_IP_MAX) return { ok: true, dropped: true };
+    await db.commit([[ipDoc, { n: inWindow ? seen.n + 1 : 1, since: inWindow ? seen.since : now }]]);
+  }
+  const id = now + "_" + randomBytes(4).toString("hex");
+  await db.commit([["errors/" + id, {
+    at: now, message, game: cut(body.game, 24), screen: cut(body.screen, 80), stack: cut(body.stack, 1500),
+    page: cut(body.page, 200), browser: cut(body.browser, 200), pseudo: cut(body.pseudo, 18)
+  }, { exists: false }]]);
+  return { ok: true };
+}
+
 // Actions de l'admin. Le jeton doit porter `admin` ET le pseudo doit toujours être dans ADMIN_PSEUDO.
 export async function admin(body, { env, fetch, now = Date.now() }) {
   const who = await verifyIdToken(body?.idToken, { fetch, now, env });
@@ -427,6 +489,7 @@ export async function handle(req, context, deps = { env: process.env, fetch: glo
     if (action === "inscription") return json(200, await signup(body, context?.ip, deps));
     if (action === "connexion") return json(200, await login(body, context?.ip, deps));
     if (action === "moi") return json(200, await me(body, deps));
+    if (action === "erreur") return json(200, await report(body, context?.ip, deps));
     if (action === "admin") return json(200, await admin(body, deps));
     return json(404, { error: "Action inconnue." });
   } catch (e) {

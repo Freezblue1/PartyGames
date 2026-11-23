@@ -5,7 +5,8 @@
 //     tout le groupe le suit
 //   - les sauvegardes (partie entière ou résultat), leur partage par lien et le lecteur « Revoir » :
 //     chaque jeu raconte sa partie coup par coup (son « journal »), le lecteur la reconstruit
-//   - l'espace admin
+//   - les succès (calculés à partir des stats), les réactions dans les salons d'attente
+//   - les rapports de plantage envoyés à l'admin, et l'espace admin
 // Les jeux l'importent (import * as Soiree from "../soiree.js") ; l'accueil appelle mountHub().
 import { firebaseConfig } from "./config.js";
 
@@ -34,6 +35,36 @@ const local = {
 };
 const errText = err => err?.code ? "Action refusée (" + err.code + ")." : err?.message || "Ça n'a pas marché.";
 
+/* ---------- crash reports ----------
+   Any uncaught error on the home page or in a game is sent (at most 5 different ones per page) to the account server,
+   which keeps it for the admin (Admin › Erreurs) with the game, the screen, the browser and the account. */
+let reportCount = 0;
+const reportedMsgs = new Set();
+function reportError(message, stack) {
+  message = String(message || "").trim();
+  if (!message || reportCount >= 5 || /ResizeObserver loop|^Script error\.?$/i.test(message)) return;
+  if (/(chrome|moz|safari)-extension:/.test(String(stack || ""))) return;   // a browser extension, not the site
+  const key = message.slice(0, 160);
+  if (reportedMsgs.has(key)) return;
+  reportedMsgs.add(key); reportCount++;
+  const M = lastM;
+  const body = {
+    message, stack: String(stack || "").slice(0, 1500), game: GAME || "accueil",
+    screen: M ? [M.mode, M.room?.phase, M.room?.step].filter(Boolean).join(" · ") : GAME ? "" : "accueil",
+    page: location.pathname, browser: navigator.userAgent, pseudo: account?.pseudo || ""
+  };
+  try { fetch(new URL("api/compte/erreur", ROOT), { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body), keepalive: true }).catch(() => {}); } catch {}
+}
+window.addEventListener("error", e => reportError(e.message || e.error?.message, e.error?.stack));
+window.addEventListener("unhandledrejection", e => { const r = e.reason; reportError(r?.message || String(r ?? ""), r?.stack); });
+// "Chrome 120 · Android", short enough for a list.
+const shortBrowser = ua => {
+  const os = /iPhone|iPad/.test(ua) ? "iPhone" : /Android/.test(ua) ? "Android" : /Windows/.test(ua) ? "Windows" : /Mac OS/.test(ua) ? "Mac" : /Linux/.test(ua) ? "Linux" : "";
+  const b = ua.match(/(Edg|Firefox|SamsungBrowser|OPR|Chrome|Version)\/(\d+)/);
+  const name = b ? { Edg: "Edge", Version: "Safari", OPR: "Opera", SamsungBrowser: "Samsung" }[b[1]] || b[1] : "";
+  return [name && name + " " + b[2], os].filter(Boolean).join(" · ") || ua.slice(0, 40);
+};
+
 /* ---------- Firebase (the same instance as the game's) ---------- */
 let A = null, auth = null, Fs = null, fs = null, fbP = null;
 function firebase() {
@@ -57,6 +88,7 @@ export function useEmulators(authMod, a, fsMod, db) {
 const ref = (...p) => Fs.doc(fs, ...p);
 
 /* ---------- account ---------- */
+let lastM = null, lastRender = null;   // the game's state and render, given after each render
 let account = null;            // { uid, pseudo, admin, color, party }
 let accountReady = null;       // the first load of the account, awaited before the account window draws
 export let replaying = false;  // true while a saved game is being replayed: games then write nothing
@@ -119,6 +151,7 @@ function avatar(c, name, cls = "") { return `<span class="so-av ${cls}" style="b
    profiles/{uid}/stats/{game}, so they follow the player to any phone. A guest's own stats are put aside
    ("profile-guest") while an account is signed in on the phone, and come back when it signs out. */
 let statsOwner = "";
+const readJson = (store, k) => { try { return JSON.parse(store.get(k) || "null"); } catch { return null; } };
 export async function syncStats(store) {
   if (!GAME || replaying) return;
   const owner = store.get("profile-owner") || "";
@@ -131,10 +164,10 @@ export async function syncStats(store) {
   let remote = null;
   try { const s = await Fs.getDoc(ref("profiles", account.uid, "stats", GAME)); if (s.exists()) remote = JSON.parse(s.data().data); } catch {}
   statsOwner = account.uid;
-  const mine = owner === account.uid ? store.json("profile", null) : null;
+  const mine = owner === account.uid ? readJson(store, "profile") : null;
   if (mine && (+mine.games || 0) > (+remote?.games || 0)) pushStats(mine);                      // played offline last time: the phone is ahead
   else if (remote) store.set("profile", JSON.stringify(remote));
-  else if (!owner) { const p = store.json("profile", null); if (p && p.games) pushStats(p); }  // first time: this phone's stats become the account's
+  else if (!owner) { const p = readJson(store, "profile"); if (p && p.games) pushStats(p); }  // first time: this phone's stats become the account's
   else if (owner !== account.uid) store.set("profile", null);                                 // another account's stats were cached here
   store.set("profile-owner", account.uid);
 }
@@ -153,9 +186,45 @@ async function loadStats(uid) {
 }
 const topOf = o => Object.entries(o || {}).sort((a, b) => b[1] - a[1])[0]?.[0] || "";
 
+/* ---------- achievements, worked out from the account's stats ---------- */
+const N = (S, g, f) => +S[g]?.data?.[f] || 0;
+const ACHIEVEMENTS = [
+  { icon: "🎲", name: "Première partie", desc: "Jouer une partie avec ton compte", goal: 1, val: T => T.games },
+  { icon: "🔟", name: "Habitué", desc: "10 parties, tous jeux confondus", goal: 10, val: T => T.games },
+  { icon: "💯", name: "Pilier de soirée", desc: "100 parties, tous jeux confondus", goal: 100, val: T => T.games },
+  { icon: "🧭", name: "Touche-à-tout", desc: "Jouer aux 9 jeux", goal: 9, val: T => T.played },
+  { icon: "👑", name: "Grand chelem", desc: "Gagner au moins une fois dans chacun des 9 jeux", goal: 9, val: T => T.wonIn },
+  ...Object.entries(GAMES).map(([g, n]) => ({ icon: "🎯", name: `Fan de ${n}`, desc: `10 parties de ${n}`, goal: 10, val: (T, S) => S[g]?.games || 0 })),
+  { icon: "🪢", name: "Sur le fil", desc: "Gagner un Dudo ou un Calza au Perudo avec un seul dé", goal: 1, val: (T, S) => N(S, "perudo", "clutch") },
+  { icon: "🕵️", name: "Détecteur de mensonges", desc: "10 Dudos gagnants au Perudo", goal: 10, val: (T, S) => N(S, "perudo", "dudos") },
+  { icon: "⭐", name: "Star de la soirée", desc: "Recevoir 25 votes à Qui de nous…", goal: 25, val: (T, S) => N(S, "quidenous", "received") },
+  { icon: "🥸", name: "Imposteur de génie", desc: "Survivre 3 fois en imposteur à Undercover", goal: 3, val: (T, S) => N(S, "undercover", "impSurvived") },
+  { icon: "🌕", name: "Survivant", desc: "Finir 5 parties de Loup-Garou en vie", goal: 5, val: (T, S) => N(S, "loup-garou", "survived") },
+  { icon: "📸", name: "Œil de lynx", desc: "20 bonnes réponses à Photo Roulette", goal: 20, val: (T, S) => N(S, "photoroulette", "found") },
+  { icon: "🥥", name: "Roi de la vanne", desc: "Gagner 20 manches de Blanc-manger coco", goal: 20, val: (T, S) => N(S, "blanc-manger-coco", "rounds") },
+  { icon: "🗒️", name: "Esprit vif", desc: "Trouver ton perso 10 fois à Qui suis-je ?", goal: 10, val: (T, S) => N(S, "quisuisje", "found") },
+  { icon: "💰", name: "Requin", desc: "Remporter 20 pots au Poker", goal: 20, val: (T, S) => N(S, "poker", "pots") },
+  { icon: "🃏", name: "Kems !", desc: "Réussir 5 Kems", goal: 5, val: (T, S) => N(S, "kems", "kems") },
+  { icon: "✋", name: "Contre-attaque", desc: "Réussir 3 contres au Kems", goal: 3, val: (T, S) => N(S, "kems", "contres") }
+];
+function achievements(list) {
+  const S = Object.fromEntries((list || []).map(s => [s.game, s]));
+  const T = { games: 0, played: 0, wonIn: 0 };
+  for (const s of list || []) { T.games += s.games; if (s.games) T.played++; if (s.wins) T.wonIn++; }
+  return ACHIEVEMENTS.map(a => { const v = Math.min(a.goal, Math.max(0, a.val(T, S) || 0)); return { ...a, v, done: v >= a.goal }; });
+}
+function achievementsHtml(list) {
+  if (!list) return `<p class="so-hint">Chargement…</p>`;
+  const all = achievements(list), done = all.filter(a => a.done);
+  return `<div class="so-label">Mes succès · ${done.length}/${all.length}</div>
+    <ul class="so-ach">${[...done, ...all.filter(a => !a.done)].map(a => `<li class="${a.done ? "so-got" : ""}" title="${esc(a.desc)}">
+      <span class="so-ach-ico" aria-hidden="true">${a.icon}</span><span class="so-mname"><b>${esc(a.name)}</b><small>${esc(a.desc)}</small></span>
+      ${a.done ? `<span class="so-tag so-pub">Obtenu</span>` : `<span class="so-ach-pro">${a.v}/${a.goal}</span>`}</li>`).join("")}</ul>`;
+}
+
 /* ---------- account window ---------- */
 let dlg = null;
-const ui = { tab: "profil", mode: "connexion", err: "", ok: "", busy: false, delOpen: false, saves: null, stats: null, adm: null, admTab: "comptes", admUser: null, admSaves: null, live: null, usage: null, counts: null };
+const ui = { tab: "profil", mode: "connexion", err: "", ok: "", busy: false, delOpen: false, saves: null, stats: null, adm: null, admTab: "comptes", admUser: null, admSaves: null, live: null, usage: null, counts: null, errors: null };
 
 function saveRow(s, uid, mine) {
   const link = new URL(`${s.game}/?revoir=${encodeURIComponent(uid + "." + s.id)}`, ROOT).href;
@@ -181,11 +250,12 @@ function statsHtml(list) {
   return `<div class="so-total"><div><b>${total.games}</b><small>parties</small></div><div><b>${total.wins}</b><small>victoires</small></div><div><b>${total.games ? Math.round(100 * total.wins / total.games) : 0}%</b><small>de victoires</small></div></div>
     <ul class="so-statlist">${Object.entries(GAMES).map(([g, name]) => {
       const s = by[g], title = s && topOf(s.data.titles);
-      return `<li><b>${esc(name)}</b>${g === "photoroulette" ? `<small>pas de stats dans ce jeu</small>` : s && s.games
+      return `<li><b>${esc(name)}</b>${s && s.games
         ? `<span>${s.games} partie${s.games > 1 ? "s" : ""} · ${s.wins} victoire${s.wins > 1 ? "s" : ""}</span>${title ? `<small>Titre fétiche : ${esc(title)}</small>` : ""}`
         : `<small>pas encore joué avec ce compte</small>`}</li>`;
     }).join("")}</ul>
-    <p class="so-hint">Les stats suivent ton compte sur tous tes appareils. Celles d'avant ton compte, sur ce téléphone, y ont été ajoutées.</p>`;
+    <p class="so-hint">Les stats suivent ton compte sur tous tes appareils. Celles d'avant ton compte, sur ce téléphone, y ont été ajoutées.</p>
+    ${achievementsHtml(list)}`;
 }
 
 function accountHtml() {
@@ -213,6 +283,7 @@ function accountHtml() {
       <div class="so-swatches" role="group" aria-label="Ma couleur">${COLORS.map(c => `<button class="so-swatch" data-so="color" data-c="${c}" style="background:${c}" aria-pressed="${account.color === c}" aria-label="Couleur ${c}"></button>`).join("")}</div>
       <p class="so-hint">Elle s'applique aux prochaines parties que tu rejoins.</p>
       ${err}${ok}
+      ${achievementsHtml(ui.stats)}
       <details class="so-more"><summary>Changer mon mot de passe</summary>
         <form class="so-stack" data-so-form="password">
           <input class="so-input" id="so-cur" type="password" autocomplete="current-password" placeholder="Mot de passe actuel" aria-label="Mot de passe actuel" required>
@@ -231,7 +302,7 @@ function accountHtml() {
   } else if (ui.tab === "saves") {
     body = err + ok + savesList(ui.saves, account.uid, true);
   } else if (ui.tab === "admin") {
-    body = `<div class="so-seg so-subtabs" role="group" aria-label="Admin">${[["comptes", "Comptes"], ["live", "En direct"], ["firebase", "Firebase"]].map(([id, l]) =>
+    body = `<div class="so-seg so-subtabs" role="group" aria-label="Admin">${[["comptes", "Comptes"], ["live", "En direct"], ["erreurs", "Erreurs"], ["firebase", "Firebase"]].map(([id, l]) =>
       `<button type="button" data-so="adm-tab" data-t="${id}" aria-pressed="${ui.admTab === id}">${l}</button>`).join("")}</div>${err}${ok}` + adminHtml();
   }
   return `<div class="so-tabs" role="tablist">${tabs.map(([id, label]) => `<button role="tab" data-so="tab" data-t="${id}" aria-selected="${ui.tab === id}">${label}</button>`).join("")}</div>
@@ -256,6 +327,23 @@ function adminHtml() {
           <button class="so-btn so-sm" data-so="${a.banned ? "adm-unban" : "adm-ban"}" data-p="${esc(a.pseudo)}">${a.banned ? "Réactiver" : "Suspendre"}</button>
           <button class="so-btn so-sm so-danger" data-so="adm-del" data-p="${esc(a.pseudo)}">Supprimer</button>`}
         </div></li>`).join("")}</ul>`;
+  }
+  if (ui.admTab === "erreurs") {
+    const list = ui.errors;
+    if (!list) return `<p class="so-hint">Chargement…</p>`;
+    if (!list.length) return `<p class="so-hint">Aucun plantage signalé. Quand une page plante chez quelqu'un, le message arrive ici (jeu, écran, navigateur).</p>`;
+    // same game + same message = one line, with how many times and the latest occurrence
+    const groups = [];
+    for (const e of list) {
+      const g = groups.find(x => x.game === e.game && x.message === e.message);
+      if (g) { g.n++; g.who.add(e.pseudo || "invité"); } else groups.push({ ...e, n: 1, who: new Set([e.pseudo || "invité"]) });
+    }
+    return `<p class="so-hint">${list.length} rapport${list.length > 1 ? "s" : ""} (30 derniers jours), ${groups.length} problème${groups.length > 1 ? "s" : ""} différent${groups.length > 1 ? "s" : ""}.</p>
+      <ul class="so-accts">${groups.map(g => `<li><div class="so-acct-main"><b>${esc(GAMES[g.game] || (g.game === "accueil" ? "Accueil" : g.game))}</b> <span class="so-tag">${g.n}×</span>${g.screen ? ` <span class="so-tag">${esc(g.screen)}</span>` : ""}
+          <small class="so-errmsg">${esc(g.message)}</small>
+          <small>dernière fois ${ago(g.at)} · ${esc(shortBrowser(g.browser || ""))} · ${esc([...g.who].slice(0, 5).join(", "))}</small>
+          ${g.stack ? `<details class="so-stack"><summary>Détails</summary><pre>${esc(g.stack)}</pre></details>` : ""}</div></li>`).join("")}</ul>
+      <button class="so-btn so-danger" data-so="adm-errors-clear">Tout effacer</button>`;
   }
   if (ui.admTab === "live") {
     const L = ui.live;
@@ -341,7 +429,7 @@ async function openTab(t) {
   ui.tab = t; ui.err = ""; ui.ok = ""; drawAccount();
   try {
     if (t === "saves") { ui.saves = null; drawAccount(); ui.saves = await loadSaves(account.uid); }
-    if (t === "stats") { ui.stats = null; drawAccount(); ui.stats = await loadStats(account.uid); }
+    if (t === "stats" || (t === "profil" && !ui.stats)) { ui.stats = null; drawAccount(); ui.stats = await loadStats(account.uid); }
     if (t === "admin") await openAdminTab(ui.admTab);
   } catch (e) { ui.err = e.message || "Chargement impossible."; }
   drawAccount();
@@ -350,6 +438,10 @@ async function openAdminTab(t) {
   ui.admTab = t; ui.err = ""; drawAccount();
   if (t === "comptes" && !ui.admUser) { ui.adm = null; drawAccount(); ui.adm = (await adminApi({ action: "list" })).accounts; }
   if (t === "live") { ui.live = null; drawAccount(); ui.live = await loadLive(); }
+  if (t === "erreurs") {
+    ui.errors = null; drawAccount();
+    ui.errors = (await Fs.getDocs(Fs.query(Fs.collection(fs, "errors"), Fs.orderBy("at", "desc"), Fs.limit(300)))).docs.map(d => ({ id: d.id, ...d.data() }));
+  }
   if (t === "firebase") {
     ui.usage = null; drawAccount();
     if (!ui.adm) ui.adm = (await adminApi({ action: "list" }).catch(() => ({ accounts: null }))).accounts;
@@ -362,7 +454,8 @@ async function openAdminTab(t) {
 async function afterAuthChange() {
   await loadAccount();
   if (GAME) { location.reload(); return; }
-  ui.tab = "profil"; ui.delOpen = false; drawAccount(); drawHubButton(); watchParty(); drawParty();
+  ui.tab = "profil"; ui.delOpen = false; ui.stats = null; drawAccount(); drawHubButton(); watchParty(); drawParty();
+  if (account) openTab("profil");
 }
 
 async function onAccountClick(e) {
@@ -427,6 +520,13 @@ async function onAccountClick(e) {
         await adminApi({ action: "delete", pseudo: d.p });
         ui.adm = (await adminApi({ action: "list" })).accounts; drawAccount();
         break;
+      case "adm-errors-clear": {
+        if (!confirm("Effacer tous les rapports de plantage ?")) break;
+        const ids = ui.errors.map(e => e.id);
+        for (let k = 0; k < ids.length; k += 400) { const bt = Fs.writeBatch(fs); ids.slice(k, k + 400).forEach(id => bt.delete(ref("errors", id))); await bt.commit(); }
+        ui.errors = []; drawAccount();
+        break;
+      }
       case "adm-room-del":
         if (!confirm(`Fermer la partie ${GAMES[d.g]} ${d.code} ? Les joueurs dedans seront renvoyés à l'accueil du jeu.`)) break;
         await Fs.deleteDoc(ref(ROOM_COLS[d.g], d.code));
@@ -512,7 +612,7 @@ export async function openAccount(tab) {
   ui.err = ""; ui.ok = "";
   drawAccount();
   dlg.showModal();
-  if (account && tab) openTab(tab);
+  if (account) openTab(tab || ui.tab);
 }
 
 /* ---------- groups ("parties") ----------
@@ -651,7 +751,7 @@ async function loadRanking() {
   const rows = await Promise.all(party.members.map(async m => {
     const st = await loadStats(m.uid).catch(() => []);
     const best = st.filter(s => s.games).sort((a, b) => b.wins - a.wins || b.games - a.games)[0];
-    return { ...m, games: st.reduce((a, s) => a + s.games, 0), wins: st.reduce((a, s) => a + s.wins, 0), best: best ? GAMES[best.game] : "" };
+    return { ...m, games: st.reduce((a, s) => a + s.games, 0), wins: st.reduce((a, s) => a + s.wins, 0), best: best ? GAMES[best.game] : "", ach: achievements(st).filter(a => a.done).length };
   }));
   return rows.sort((a, b) => b.wins - a.wins || (b.games ? b.wins / b.games : 0) - (a.games ? a.wins / a.games : 0) || b.games - a.games);
 }
@@ -690,7 +790,7 @@ function drawParty() {
         ${host && m.uid !== account.uid ? `<button class="so-x so-xs" data-so="party-host" data-uid="${esc(m.uid)}" aria-label="Faire de ${esc(m.pseudo)} le chef" title="Le faire chef">👑</button><button class="so-x so-xs" data-so="party-kick" data-uid="${esc(m.uid)}" aria-label="Retirer ${esc(m.pseudo)}">×</button>` : ""}</li>`).join("")}</ul>
       ${!host && hostAway() ? `<div class="so-now"><span>${hostMember() ? `${esc(party.data.hostPseudo || "Le chef")} n'est plus là depuis un moment.` : "Le chef a quitté le groupe."}</span><button class="so-btn so-sm so-primary" data-so="party-claim">Devenir chef</button></div>` : ""}
       <p class="so-hint">${host ? "Choisis un jeu ci-dessous et crée la partie : tout le groupe arrivera dans ton salon. 👑 passe ton rôle de chef à quelqu'un." : `Quand ${esc(party.data.hostPseudo || "le chef")} lance un jeu, tu arrives directement dans sa partie.`}</p>${err}
-      <details class="so-more" data-so-rank ${party.rankOpen ? "open" : ""}><summary>Classement du groupe</summary>${party.ranking ? `<ol class="so-rank">${party.ranking.map((m, i) => `<li><span class="so-pos">${i + 1}</span>${avatar(m.color || COLORS[0], m.pseudo)}<span class="so-mname">${esc(m.pseudo)}<small>${m.games ? `${m.games} partie${m.games > 1 ? "s" : ""}${m.best ? " · meilleur jeu : " + esc(m.best) : ""}` : "pas encore de partie"}</small></span><b>${m.wins} 🏆</b></li>`).join("")}</ol>` : `<p class="so-hint">Chargement…</p>`}
+      <details class="so-more" data-so-rank ${party.rankOpen ? "open" : ""}><summary>Classement du groupe</summary>${party.ranking ? `<ol class="so-rank">${party.ranking.map((m, i) => `<li><span class="so-pos">${i + 1}</span>${avatar(m.color || COLORS[0], m.pseudo)}<span class="so-mname">${esc(m.pseudo)}<small>${m.games ? `${m.games} partie${m.games > 1 ? "s" : ""} · ${m.ach} succès${m.best ? " · meilleur jeu : " + esc(m.best) : ""}` : "pas encore de partie"}</small></span><b>${m.wins} 🏆</b></li>`).join("")}</ol>` : `<p class="so-hint">Chargement…</p>`}
         <p class="so-hint">Victoires dans tous les jeux, avec les stats gardées dans les comptes.</p></details>
       <button class="so-btn so-ghost" data-so="party-leave">${host && party.members.length > 1 ? "Quitter le groupe (le rôle de chef passe à quelqu'un)" : host ? "Dissoudre le groupe" : "Quitter le groupe"}</button>
       ${host && party.members.length > 1 ? `<button class="so-link" data-so="party-dissolve">Dissoudre le groupe pour tout le monde</button>` : ""}`;
@@ -784,13 +884,62 @@ function decorate(M) {
   app?.querySelectorAll('[data-act="rename-open"]').forEach(b => { b.hidden = true; });
 }
 
-let lastM = null;
 // Called by the game after every render (its render function is wrapped).
-export function frame(M) {
+export function frame(M, render) {
   if (replaying) return;
-  lastM = M;
+  lastM = M; lastRender = render || lastRender;
   decorate(M);
   drawSaveBar(M);
+  reactions(M);
+}
+
+/* ---------- reactions in the waiting room ----------
+   reactions/{game_CODE}: the last reaction sent in that lobby. Every phone in the lobby listens and pops it up. */
+const EMOJIS = ["😂", "🔥", "🙄", "👏", "😱", "❤️", "🎉", "😴"];
+let react = null, reactEl = null, lastSent = 0;
+function reactions(M) {
+  const here = GAME && M.mode === "room" && !M.tv && M.code && M.room?.phase === "lobby" && M.players?.some(p => p.id === M.me);
+  const key = here ? `${GAME}_${M.code}` : "";
+  if ((react?.key || "") !== key) {
+    react?.unsub();
+    react = key ? { key, unsub: () => {}, last: null } : null;
+    if (react) {
+      const r = react;
+      r.unsub = Fs.onSnapshot(ref("reactions", key), s => {
+        if (s.metadata.hasPendingWrites) return;
+        if (!s.exists()) { if (r.last === null) r.last = 0; return; }   // nobody has reacted in this lobby yet
+        const d = s.data(), at = tsMs(d.at);
+        if (r.last === null) { r.last = at; return; }   // the one already there when we arrived
+        if (at > r.last) { r.last = at; popReaction(d.e, d.nick); }
+      }, () => {});
+    }
+  }
+  if (!reactEl && key) {
+    reactEl = document.createElement("div");
+    reactEl.className = "so-react";
+    reactEl.setAttribute("role", "group");
+    reactEl.setAttribute("aria-label", "Réactions");
+    reactEl.innerHTML = EMOJIS.map(e => `<button type="button" data-e="${e}" aria-label="Réagir ${e}">${e}</button>`).join("");
+    reactEl.addEventListener("click", e => {
+      const b = e.target.closest("[data-e]");
+      if (!b || !react || Date.now() - lastSent < 450) return;
+      lastSent = Date.now();
+      const nick = lastM?.players?.find(p => p.id === lastM.me)?.nick || pseudo() || "?";
+      Fs.setDoc(ref("reactions", react.key), { e: b.dataset.e, by: auth.currentUser?.uid || "", nick: String(nick).slice(0, 18), at: Fs.serverTimestamp() }).catch(() => {});
+    });
+    document.body.appendChild(reactEl);
+  }
+  if (reactEl) reactEl.hidden = !key;
+  document.body.classList.toggle("so-has-react", !!key);
+}
+function popReaction(e, nick) {
+  if (!EMOJIS.includes(e)) return;
+  const el = document.createElement("div");
+  el.className = "so-pop";
+  el.style.left = (12 + Math.random() * 70) + "%";
+  el.innerHTML = `<span>${e}</span><small>${esc(nick)}</small>`;
+  document.body.appendChild(el);
+  setTimeout(() => el.remove(), 2600);
 }
 
 /* ---------- saving: each game tells its game in words (its journal) ----------
@@ -916,6 +1065,29 @@ export async function replayBoot() {
   return true;
 }
 
+// The journal as plain text, to paste in the group chat.
+function journalText(saved, meta) {
+  const P = saved.players || {}, plain = s => String(s || "").replace(/@([A-Za-z0-9_-]+)/g, (m, id) => P[id]?.nick || m);
+  const lines = [`${GAMES[saved.game] || "Partie"} · ${when(meta.at)}`, Object.values(P).map(p => p.nick).join(", "), ""];
+  for (const e of saved.events || []) {
+    if (e.head) lines.push("", `— ${plain(e.head)} —`);
+    if (e.text) lines.push(plain(e.text));
+  }
+  if (saved.final) {
+    lines.push("", `${saved.final.title || "Résultat"} :`);
+    (saved.final.rows || []).forEach((r, k) => lines.push(`${k + 1}. ${P[r.who]?.nick || "?"} · ${r.text}`));
+  }
+  return lines.join("\n").replace(/\n{3,}/g, "\n\n").trim();
+}
+async function copyText(text) {
+  try { await navigator.clipboard.writeText(text); return true; }
+  catch {
+    const a = document.createElement("textarea"); a.value = text; document.body.appendChild(a); a.select();
+    let ok = false; try { ok = document.execCommand("copy"); } catch {}
+    a.remove(); return ok;
+  }
+}
+
 function show(app, saved, meta) {
   const P = saved.players || {}, events = saved.events || [], single = !events.length;
   const name = id => P[id] ? `<b class="so-name" style="--c:${esc(P[id].color || "#555")}">${esc(P[id].nick)}</b>` : "?";
@@ -926,26 +1098,29 @@ function show(app, saved, meta) {
   const head = `<header class="so-rhead"><div class="so-label">${single ? "Résultat" : "Revoir"} · ${when(meta.at)}</div><h1 class="so-rtitle">${esc(GAMES[saved.game] || "")}</h1>
     <div class="so-chips">${Object.entries(P).map(([id, p]) => `<span class="so-chip">${avatar(p.color || "#555", p.nick)}${esc(p.nick)}</span>`).join("")}</div></header>`;
   document.body.classList.add("so-has-bar");
+  const ctl = document.createElement("div");
+  ctl.className = "so-bar so-player";
+  document.body.appendChild(ctl);
+  let copied = false;
+  const copyBtn = () => `<button class="so-btn so-sm" data-p="copy">${copied ? "✓ Copié" : "Copier en texte"}</button>`;
+  const onCopy = async () => { copied = await copyText(journalText(saved, meta)); setTimeout(() => { copied = false; draw(); }, 2000); draw(); };
 
   if (single) {
     app.innerHTML = head + boardHtml(saved.board) + finalHtml();
-    const ctl = document.createElement("div");
-    ctl.className = "so-bar so-player";
-    ctl.innerHTML = `<div class="so-bar-in"><span class="so-bar-txt"><b>Résultat</b> · ${esc(GAMES[saved.game] || "")} · ${when(meta.at)}</span><a class="so-btn so-sm so-ghost" href="${ROOT.href}">Quitter</a></div>`;
-    document.body.appendChild(ctl);
+    var draw = () => { ctl.innerHTML = `<div class="so-bar-in"><span class="so-bar-txt"><b>Résultat</b> · ${esc(GAMES[saved.game] || "")} · ${when(meta.at)}</span>${copyBtn()}<a class="so-btn so-sm so-ghost" href="${ROOT.href}">Quitter</a></div>`; };
+    ctl.addEventListener("click", e => { if (e.target.closest("[data-p=copy]")) onCopy(); });
+    draw();
     return;
   }
 
-  let i = 0, timer = null;
+  let i = 0, timer = null, speed = 1;
   const boards = []; let cur = null;
   events.forEach((e, k) => { if (e.board) cur = e.board; boards[k] = cur; });
+  const heads = events.map((e, k) => e.head ? { k, label: e.head } : null).filter(Boolean);
   app.innerHTML = head + `<div class="so-rboard"></div><ol class="so-log"></ol><div class="so-rfinal"></div>`;
   const logEl = app.querySelector(".so-log"), boardEl = app.querySelector(".so-rboard"), finalEl = app.querySelector(".so-rfinal");
   logEl.innerHTML = events.map((e, k) => `<li data-k="${k}" class="${e.head ? "so-lh" : ""} ${e.tone ? "so-t-" + esc(e.tone) : ""}" hidden>${e.head ? `<span class="so-lhead">${rich(e.head)}</span>` : ""}${e.text ? `<span class="so-ltext">${rich(e.text)}</span>` : ""}</li>`).join("");
   const items = [...logEl.children];
-  const ctl = document.createElement("div");
-  ctl.className = "so-bar so-player";
-  document.body.appendChild(ctl);
 
   const step = n => {
     i = Math.max(0, Math.min(events.length - 1, n));
@@ -958,8 +1133,9 @@ function show(app, saved, meta) {
   const stop = () => { clearTimeout(timer); timer = null; };
   const tick = () => {
     if (i >= events.length - 1) { stop(); draw(); return; }
-    timer = setTimeout(() => { step(i + 1); if (timer) tick(); }, events[i + 1]?.head ? 1600 : 1200);
+    timer = setTimeout(() => { step(i + 1); if (timer) tick(); }, (events[i + 1]?.head ? 1600 : 1200) / speed);
   };
+  const roundAt = () => [...heads].reverse().find(h => h.k <= i)?.k ?? "";
   function draw() {
     ctl.innerHTML = `<div class="so-bar-in">
       <span class="so-bar-txt"><b>Revoir</b> · ${esc(GAMES[saved.game] || "")} · ${i + 1}/${events.length}</span>
@@ -969,19 +1145,25 @@ function show(app, saved, meta) {
         <button class="so-btn so-sm so-primary" data-p="play" aria-label="${timer ? "Pause" : "Lecture"}">${timer ? "⏸" : "▶"}</button>
         <button class="so-btn so-sm" data-p="next" aria-label="Suivant">▶|</button>
         <button class="so-btn so-sm" data-p="last" aria-label="Fin">⏭</button>
+        <button class="so-btn so-sm" data-p="speed" aria-label="Vitesse ×${speed}, changer">×${speed}</button>
       </div>
       <input class="so-range" type="range" min="0" max="${events.length - 1}" value="${i}" aria-label="Moment de la partie">
+      ${heads.length > 1 ? `<select class="so-input so-jump" aria-label="Aller à"><option value="0">Aller à… · début</option>${heads.map(h => `<option value="${h.k}" ${h.k === roundAt() ? "selected" : ""}>${esc(h.label)}</option>`).join("")}</select>` : ""}
+      ${copyBtn()}
       <a class="so-btn so-sm so-ghost" href="${ROOT.href}">Quitter</a>
     </div>`;
   }
   ctl.addEventListener("click", e => {
     const p = e.target.closest("[data-p]")?.dataset.p;
     if (!p) return;
+    if (p === "copy") { onCopy(); return; }
+    if (p === "speed") { speed = speed === 4 ? 1 : speed * 2; if (timer) { stop(); tick(); } draw(); return; }
     if (p === "play") { if (timer) stop(); else { if (i >= events.length - 1) step(0); tick(); } draw(); return; }
     stop();
     step({ first: 0, prev: i - 1, next: i + 1, last: events.length - 1 }[p]);
   });
   ctl.addEventListener("input", e => { if (e.target.classList.contains("so-range")) { stop(); step(Number(e.target.value)); } });
+  ctl.addEventListener("change", e => { if (e.target.classList.contains("so-jump")) { stop(); step(Number(e.target.value)); } });
   step(0);
 }
 
@@ -989,6 +1171,7 @@ function show(app, saved, meta) {
 if (DEV) window.soireeDev = {
   journal: () => { const j = journal(); return { v: 2, game: GAME, me: lastM?.me, ...j }; },
   state: () => lastM,   // the game's own state object (tests fill it with a sample game, then read the journal)
+  render: () => lastRender?.(),   // redraw the game (after changing its state)
   fakeAccount(a) { account = a; drawHubButton(); drawParty(); if (dlg?.open) drawAccount(); },
   ui
 };

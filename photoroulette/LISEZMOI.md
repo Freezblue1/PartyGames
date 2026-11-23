@@ -22,6 +22,8 @@ Pas besoin de Firebase Storage (qui demande maintenant le forfait payant) : le f
 
 ## Jouer
 
+- **Mon profil** (sur l'accueil du jeu) : parties, victoires, bonnes réponses, ta meilleure partie et ton trophée fétiche (sur ce téléphone, et dans ton compte si tu es connecté).
+
 - Une personne clique **Créer une partie** : elle devient le modo et reçoit un code à 4 caractères. Les autres ouvrent le lien d'invitation ou tapent le code. Il faut au moins 3 joueurs avec des photos.
 - Le modo choisit le nombre de photos par joueur (3, 5, 8 ou 10) et le chrono (sans, 10, 15, 20 ou 30 secondes).
 - Chacun met le plus de photos possible dans **la roulette**, et le jeu en tire le bon nombre **au hasard**. Personne ne sait lesquelles, pas même leur propriétaire. Seules les photos tirées sont envoyées : on peut en mettre des milliers sans rien consommer de plus.

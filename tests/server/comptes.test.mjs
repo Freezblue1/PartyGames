@@ -28,6 +28,10 @@ async function fetch(url, init = {}) {
     return monitoringDenied ? ok(403, {}) : ok(200, { timeSeries: [{ points: [{ value: { int64Value: { read_count: "1234", write_count: "56", delete_count: "7" }[m] } }] }] });
   }
   assert.equal(init.headers.authorization, "Bearer tok");
+  if (url.endsWith(":listCollectionIds")) {
+    const base = decodeURIComponent(new URL(url).pathname.split("/documents/")[1]).replace(/:listCollectionIds$/, ""), depth = base.split("/").length;
+    return ok(200, { collectionIds: [...new Set([...docs.keys()].filter(k => k.startsWith(base + "/") && k.split("/").length >= depth + 2).map(k => k.split("/")[depth]))] });
+  }
   if (url.endsWith("/documents:runQuery")) {
     const f = JSON.parse(init.body).structuredQuery, col = f.from[0].collectionId, w = f.where.fieldFilter;
     return ok(200, [...docs].filter(([k, d]) => k.startsWith(col + "/") && d.fields[w.field.fieldPath]?.stringValue === w.value.stringValue).map(([k]) => ({ document: { name: "projects/p/databases/(default)/documents/" + k } })));
@@ -275,6 +279,38 @@ assert.equal(new Date(lib.pacificMidnight(Date.parse("2026-11-21T20:00:00Z"))).t
   assert.ok(out.closed.includes("OLD1") && !out.closed.includes("NEW1"));
   assert.ok(!docs.has("parties/OLD1") && !docs.has("parties/OLD1/members/u1") && docs.has("parties/NEW1"));
   console.log("idle group closed after 3 days, active one kept");
+}
+
+// ---------- crash reports ----------
+r = await call("erreur", { message: "TypeError: x is undefined", game: "perudo", screen: "room · play", stack: "at a (app.js:1)\nat b", pseudo: "Ana" }, "198.51.100.77");
+assert.equal(r.status, 200);
+const reports = [...docs.keys()].filter(k => k.startsWith("errors/"));
+assert.equal(reports.length, 1);
+assert.equal(docs.get(reports[0]).fields.game.stringValue, "perudo");
+r = await call("erreur", { message: "" }, "198.51.100.77"); assert.equal(r.status, 400);
+for (let i = 0; i < 40; i++) await call("erreur", { message: "boom " + i }, "198.51.100.78");
+assert.equal([...docs.keys()].filter(k => k.startsWith("errors/")).length, 31, "30 per connection and hour (+ the first one)");
+console.log("crash reports stored, at most 30 per connection and hour");
+
+// ---------- nightly cleanup of games ----------
+{
+  const ts = ms => ({ timestampValue: new Date(ms).toISOString() });
+  const put2 = (path, fields) => docs.set(path, { fields, updateTime: "t" + (++tick) });
+  put2("pdRooms/OLD1", { phase: { stringValue: "play" }, touchedAt: ts(clock - 30 * 3600000) });
+  put2("pdRooms/OLD1/players/u1", { nick: { stringValue: "Ana" } });
+  put2("pdRooms/OLD1/moves/m1", { kind: { stringValue: "bid" } });
+  put2("prRooms/OLD2", { phase: { stringValue: "lobby" } });                           // no stamp at all: old
+  put2("prRooms/OLD2/photos/p1", { d: { stringValue: "data" } });
+  put2("prRooms/OLD2/photos/p1/bits/b1", { d: { stringValue: "deeper" } });
+  put2("pdRooms/LIVE", { phase: { stringValue: "play" }, touchedAt: ts(clock - 3600000) });
+  put2("pdRooms/LIVE/players/u1", { nick: { stringValue: "Ben" } });
+  put2("errors/old", { at: { integerValue: String(clock - 40 * 86400000) }, message: { stringValue: "old" } });
+  const out = await lib.closeOldRooms({ env, fetch, now: clock });
+  assert.deepEqual(out.deleted.sort(), ["pdRooms/OLD1", "prRooms/OLD2"]);
+  assert.ok(![...docs.keys()].some(k => k.startsWith("pdRooms/OLD1") || k.startsWith("prRooms/OLD2")), "everything under old games is gone");
+  assert.ok(docs.has("pdRooms/LIVE") && docs.has("pdRooms/LIVE/players/u1"), "a game played an hour ago is kept");
+  assert.ok(!docs.has("errors/old") && docs.has(reports[0]), "reports older than 30 days are purged");
+  console.log("nightly cleanup: old games deleted with everything under them, live game kept, old reports purged");
 }
 
 assert.equal(oauthCalls, 1, "access token should be cached");

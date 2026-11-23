@@ -151,5 +151,30 @@ body.so-has-bar{padding-bottom:120px}
 /* the controls take up to three rows on a phone: keep the current move above them */
 body.so-replay.so-has-bar{padding-bottom:240px}
 .so-log li{scroll-margin-bottom:240px;scroll-margin-top:120px}
+/* achievements */
+.so-ach{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:6px}
+.so-ach li{display:flex;align-items:center;gap:10px;border:2px dashed color-mix(in srgb,var(--so-ink) 35%,transparent);border-radius:12px;padding:6px 10px;opacity:.7}
+.so-ach li.so-got{border:2px solid var(--so-ink);background:var(--so-card-2);opacity:1}
+.so-ach-ico{font-size:22px;width:28px;text-align:center;filter:grayscale(1)}
+.so-got .so-ach-ico{filter:none}
+.so-ach-pro{font:800 13px var(--so-body);color:var(--so-ink-2);white-space:nowrap}
+/* admin: crash reports */
+.so-errmsg{font-family:ui-monospace,Consolas,monospace;color:var(--so-ink)!important;overflow-wrap:anywhere}
+.so-stack summary{font-size:13px;font-weight:700;cursor:pointer;margin-top:4px}
+.so-stack pre{white-space:pre-wrap;overflow-wrap:anywhere;font-size:11px;max-height:180px;overflow:auto;background:var(--so-card-2);padding:8px;border-radius:8px;margin:6px 0 0}
+/* replay: jump to a round */
+.so-jump{min-height:40px;padding:6px 10px;font-size:14px;flex:1 1 160px;width:auto}
+/* reactions in the waiting room */
+body.so-has-react{padding-bottom:84px}
+.so-react{position:fixed;left:50%;transform:translateX(-50%);bottom:calc(12px + env(safe-area-inset-bottom,0px));z-index:45;display:flex;gap:2px;padding:5px 6px;
+  background:var(--card,#fff);border:2.5px solid var(--ink,#17181C);border-radius:999px;box-shadow:3px 3px 0 var(--shadow,#17181C);max-width:calc(100% - 24px);overflow-x:auto}
+.so-react[hidden]{display:none}
+.so-react button{font-size:22px;line-height:1;width:40px;height:40px;border:0;border-radius:50%;background:transparent;cursor:pointer;flex:none}
+.so-react button:active{transform:scale(1.25)}
+.so-react button:focus-visible{outline:3px solid var(--accent,#D93A26);outline-offset:1px}
+.so-pop{position:fixed;bottom:90px;z-index:60;display:flex;flex-direction:column;align-items:center;pointer-events:none;animation:so-up 2.6s ease-out forwards}
+.so-pop span{font-size:44px;line-height:1}
+.so-pop small{font:800 12px var(--body,system-ui,sans-serif);color:var(--ink,#17181C);background:var(--card,#fff);border:1.5px solid var(--ink,#17181C);border-radius:999px;padding:2px 8px;margin-top:2px}
+@keyframes so-up{0%{transform:translateY(0) scale(.6);opacity:0}12%{transform:translateY(-20px) scale(1.15);opacity:1}100%{transform:translateY(-55vh) scale(1);opacity:0}}
 @keyframes so-in{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
-@media (prefers-reduced-motion: reduce){.so-sheet[open]{animation:none}.so-btn{transition:none}}
+@media (prefers-reduced-motion: reduce){.so-pop{animation-duration:1.4s}.so-sheet[open]{animation:none}.so-btn{transition:none}}

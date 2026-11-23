@@ -108,6 +108,19 @@ service cloud.firestore {
       }
     }
 
+    /* ===================== Réactions dans les salons d'attente ===================== */
+    // Un document par salon (« perudo_ABCD ») : la dernière réaction (emoji, qui, quand). Une toutes les 0,4 s au plus par salon.
+    match /reactions/{rid} {
+      allow read: if signedIn();
+      allow write: if signedIn() && rid.matches('^[a-z-]+_[A-Z0-9]{4}$')
+        && request.resource.data.keys().hasOnly(['e', 'by', 'nick', 'at'])
+        && request.resource.data.e in ['😂', '🔥', '🙄', '👏', '😱', '❤️', '🎉', '😴']
+        && request.resource.data.by == request.auth.uid
+        && request.resource.data.nick is string && request.resource.data.nick.size() <= 18
+        && request.resource.data.at == request.time
+        && (resource == null || request.time > resource.data.at + duration.value(400, 'ms'));
+    }
+
     /* ===================== Qui de nous… ===================== */
     match /rooms/{code} {
       function room() { return get(/databases/$(database)/documents/rooms/$(code)).data; }
@@ -1128,5 +1141,8 @@ service cloud.firestore {
     match /accountIps/{id} { allow read, write: if false; }
     match /accountsArchive/{id} { allow read, write: if false; }
     match /loginIps/{id} { allow read, write: if false; }
+    // Rapports de plantage : écrits par le serveur (/api/compte/erreur), lus par l'admin seulement.
+    match /errors/{id} { allow read, write: if false; }
+    match /errorIps/{id} { allow read, write: if false; }
   }
 }

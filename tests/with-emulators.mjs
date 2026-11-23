@@ -7,7 +7,9 @@ import { join, delimiter } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const here = fileURLToPath(new URL(".", import.meta.url));
-const [only, command] = process.argv.slice(2);
+const [only, base, ...extra] = process.argv.slice(2);
+// extra arguments go to the command: npm run test:e2e -- -g Poker
+const command = [base, ...extra.map(a => /\s/.test(a) ? `'${a}'` : a)].filter(Boolean).join(" ");
 if (!only || !command) { console.error('usage: node with-emulators.mjs <emulators> "<command>"'); process.exit(2); }
 
 // The CLI only loads rules from inside this folder: copy the site's real rules file in (git-ignored).

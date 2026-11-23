@@ -97,6 +97,20 @@ for (const [game, s] of Object.entries(SAMPLES)) {
     expect(j.final.rows).toHaveLength(s.rows);
     if (s.rowText) expect(JSON.stringify(j.final.rows)).toContain(s.rowText);
     for (const id of Object.keys(j.players)) expect(j.players[id].nick).not.toBe("?");
+    if (game === "photoroulette") {
+      // the end screen records the game in Photo Roulette's new stats, and the home page shows them
+      const prof = await page.evaluate(() => {
+        const M = window.soireeDev.state();
+        Object.assign(M, { mode: "room", code: "ABCD", roomReady: true, playersReady: true, me: "b" });
+        M.room.phase = "end";
+        window.soireeDev.render();
+        M.mode = "home"; window.soireeDev.render();
+        return JSON.parse(localStorage.getItem("pr-profile") || "null");
+      });
+      expect(prof).toMatchObject({ games: 1, wins: 1, points: 80, found: 1, best: 80 });
+      await expect(page.locator("#app")).toContainText("Mon profil");
+      await expect(page.locator("#app .stats")).toContainText("1 partie");
+    }
     expect(errors).toEqual([]);
     await ctx.close();
   });

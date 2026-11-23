@@ -484,7 +484,7 @@ function playerStats(ids, hist) {
 
 /* ---------- profile, kept on this phone ---------- */
 function profile() {
-  return { color: null, games: 0, wins: 0, dudos: 0, calzas: 0, titles: {}, faces: {}, recorded: [], ...store.json("profile", {}) };
+  return { color: null, games: 0, wins: 0, dudos: 0, calzas: 0, clutch: 0, titles: {}, faces: {}, recorded: [], ...store.json("profile", {}) };
 }
 function saveProfile(p) { store.set("profile", JSON.stringify(p)); Soiree.statsSaved(p); }  // also kept in the account
 function recordGame(gameId, ids, rank, hist, titles) {
@@ -494,6 +494,8 @@ function recordGame(gameId, ids, rank, hist, titles) {
   p.games++;
   if (rank[0] === M.me) p.wins++;
   p.dudos += s.dudoOk; p.calzas += s.calzaOk;
+  // "Sur le fil": a dudo or calza won while holding a single die
+  p.clutch = (p.clutch || 0) + hist.filter(h => h.u === M.me && (h.one || []).includes(M.me) && (h.k === "calza" ? h.gain === M.me : h.lose && h.lose !== M.me)).length;
   for (const [f, n] of Object.entries(s.faces)) p.faces[f] = (p.faces[f] || 0) + n;
   const t = titles[M.me];
   if (t) p.titles[t.title] = (p.titles[t.title] || 0) + 1;
@@ -1586,5 +1588,5 @@ Soiree.setJournal(() => {
 });
 
 // Shared layer (account button, own name, group, end-of-game save bar): after every render.
-{ const draw = render; render = () => { draw(); Soiree.frame(M); }; }
+{ const draw = render; render = () => { draw(); Soiree.frame(M, render); }; }
 boot();

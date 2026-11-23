@@ -7,7 +7,7 @@ const EMU = { auth: "http://127.0.0.1:9099", host: "127.0.0.1", firestorePort: 8
 const PASS = "motdepasse1";
 
 async function player(browser, name, errors) {
-  const ctx = await browser.newContext();
+  const ctx = await browser.newContext({ permissions: ["clipboard-read", "clipboard-write"] });
   await ctx.addInitScript(e => { window.SOIREE_EMULATORS = e; }, EMU);
   const page = await ctx.newPage();
   page.on("pageerror", e => errors.push(`${name}: ${e.message}`));
@@ -131,6 +131,24 @@ test("two players: group, full game, saves, replay", async ({ browser }) => {
     await expect(bob.page.locator(".so-final")).toContainText("Palmarès");
     // names are drawn in the players' colours
     await expect(log.locator(".so-name").first()).toBeVisible();
+    // speed ×1 → ×2 → ×4 → ×1
+    const speed = bob.page.locator('[data-p="speed"]');
+    await expect(speed).toHaveText("×1");
+    await speed.click(); await expect(speed).toHaveText("×2");
+    await speed.click(); await expect(speed).toHaveText("×4");
+    await speed.click(); await expect(speed).toHaveText("×1");
+    // jump straight to a round
+    await bob.page.locator(".so-jump").selectOption({ label: "Question 2" });
+    await expect(bob.page.locator(".so-log li.so-cur")).toContainText("Question 2");
+    await expect(bob.page.locator(".so-log li", { hasText: "Question 2" })).toBeVisible();
+    // copy the whole game as text, for the group chat
+    await bob.page.locator('[data-p="copy"]').click();
+    await expect(bob.page.locator('[data-p="copy"]')).toHaveText("✓ Copié");
+    const text = (await bob.page.evaluate(() => navigator.clipboard.readText())).replace(/\r/g, "");   // Windows clipboard line ends
+    expect(text).toContain("Qui de nous…");
+    expect(text).toContain("— Question 1 —");
+    expect(text).toContain("Bob vote pour Alice.");
+    expect(text).toMatch(/Palmarès :\n1\. /);
   });
 
   await test.step("the saved result opens on the final ranking", async () => {
@@ -161,6 +179,8 @@ test("two players: group, full game, saves, replay", async ({ browser }) => {
     await bob.page.locator("#acct").click();
     await bob.page.locator('[data-so="tab"][data-t="stats"]').click();
     await expect(bob.page.locator(".so-statlist li", { hasText: "Qui de nous" })).toContainText("1 partie");
+    await expect(bob.page.locator(".so-ach li.so-got", { hasText: "Première partie" })).toBeVisible();
+    await expect(bob.page.locator(".so-ach li", { hasText: "Fan de Qui de nous" })).toContainText("1/10");
     await bob.page.locator('[data-so="close"]').click();
   });
 

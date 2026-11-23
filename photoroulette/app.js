@@ -668,6 +668,7 @@ function renderHome() {
        <p class="hint">Tu seras le modo : tu règles la partie et tu passes d'une photo à l'autre.</p>
        <div class="or">ou</div>
        <section class="panel"><div class="label">Rejoindre avec un code</div>${joinForm}</section>`}
+  ${profilePanel()}
   ${rulesBlock()}`;
 }
 
@@ -898,9 +899,9 @@ function board(r, key) {
   return `<section class="panel"><div class="label">Classement</div><ol class="rank">${list.map(s =>
     `<li class="${s.pos === 1 && s.pts ? "first" : ""}"><span class="pos">${s.pos}</span>${av(s.p)}<span class="who"><b>${esc(s.p.nick)}</b></span>${s.g ? `<span class="gain">+${s.g}</span>` : ""}<span class="pts">${s.pts}</span></li>`).join("")}</ol></section>`;
 }
-function awards(r) {
+function awardList(r) {
   const keys = Object.keys(r.answers || {}).filter(k => r.answers[k] && r.answers[k] !== "?");
-  if (keys.length < 3) return "";
+  if (keys.length < 3) return [];
   const sc = gameScores(r), out = [];
   const fast = Object.entries(sc).filter(([, s]) => s.ok >= 2).map(([u, s]) => ({ u, v: s.pts / s.ok })).sort((a, b) => b.v - a.v)[0];
   if (fast) out.push({ t: "Éclair", d: "Les bonnes réponses les plus rapides", u: fast.u });
@@ -921,6 +922,10 @@ function awards(r) {
       out.push({ t: "Agent secret", d: last.v ? `Ses photos n'ont été reconnues qu'à ${pct(last.v)}%` : "Personne n'a reconnu ses photos", u: last.u });
     }
   }
+  return out;
+}
+function awards(r) {
+  const out = awardList(r);
   if (!out.length) return "";
   return `<section class="panel"><div class="label">Les trophées</div><ul class="awards">${out.map(a => {
     const p = who(a.u);
@@ -938,7 +943,39 @@ function gallery(r) {
     <p class="hint left">Gardées seulement sur ce téléphone jusqu'à la prochaine partie : elles sont déjà effacées du serveur.</p>
   </section>`;
 }
+/* ---------- stats, kept on this phone (and in the account, see soiree.js) ---------- */
+function profile() {
+  let saved = {};
+  try { saved = JSON.parse(store.get("profile") || "{}") || {}; } catch {}
+  return { games: 0, wins: 0, points: 0, found: 0, best: 0, titles: {}, recorded: [], ...saved };
+}
+function saveProfile(p) { store.set("profile", JSON.stringify(p)); Soiree.statsSaved(p); }  // also kept in the account
+function recordGame(r) {
+  const played = Object.keys(r.answers || {}).length;
+  if (!played || !r.gameId || !people(r).some(x => x.id === M.me)) return;
+  const p = profile();
+  if (p.recorded.includes(r.gameId)) return;
+  const sc = gameScores(r), mine = sc[M.me] || { pts: 0, ok: 0 }, top = Math.max(0, ...Object.values(sc).map(s => s.pts));
+  p.games++;
+  if (mine.pts && mine.pts === top) p.wins++;
+  p.points += mine.pts; p.found += mine.ok; p.best = Math.max(p.best, mine.pts);
+  for (const a of awardList(r)) if (a.u === M.me) p.titles[a.t] = (p.titles[a.t] || 0) + 1;
+  p.recorded = [...p.recorded, r.gameId].slice(-50);
+  saveProfile(p);
+}
+function profilePanel() {
+  const p = profile(), title = Object.entries(p.titles || {}).sort((a, b) => b[1] - a[1])[0];
+  return `<section class="panel"><div class="label">Mon profil</div>${p.games ? `<ul class="stats">
+      <li><b>${p.games}</b> ${p.games > 1 ? "parties" : "partie"}</li>
+      <li><b>${p.wins}</b> ${p.wins > 1 ? "victoires" : "victoire"}</li>
+      <li><b>${p.found}</b> ${p.found > 1 ? "bonnes réponses" : "bonne réponse"}</li>
+    </ul>
+    ${p.best ? `<p class="hint left">Ta meilleure partie : <b>${p.best} points</b>.</p>` : ""}
+    ${title ? `<p class="hint left">Ton trophée fétiche : <b>${esc(title[0])}</b>.</p>` : ""}`
+    : `<p class="hint left">Tes stats apparaîtront ici après ta première partie. Avec un compte, elles te suivent sur tous tes appareils.</p>`}</section>`;
+}
 function endScreen(r, mod) {
+  recordGame(r);
   const played = Object.keys(r.answers || {}).length;
   let h;
   if (!played) h = `<section class="panel"><p class="lead">Aucune photo jouée pour l'instant.</p></section>`;
@@ -1281,6 +1318,7 @@ async function boot() {
     M.me = u.uid;
     await Soiree.start().catch(() => null);
     if (Soiree.pseudo()) M.drafts.nick = Soiree.pseudo();
+    await Soiree.syncStats(store).catch(() => {});  // stats follow the account across devices
   }
   catch (e) {
     M.mode = "fatal";
@@ -1334,5 +1372,5 @@ Soiree.setJournal(() => {
 });
 
 // Shared layer (account button, own name, group, end-of-game save bar): after every render.
-{ const draw = render; render = () => { draw(); Soiree.frame(M); }; }
+{ const draw = render; render = () => { draw(); Soiree.frame(M, render); }; }
 boot();

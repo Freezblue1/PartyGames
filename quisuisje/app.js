@@ -1853,5 +1853,5 @@ Soiree.setJournal(() => {
 });
 
 // Shared layer (account button, own name, group, end-of-game save bar): after every render.
-{ const draw = render; render = () => { draw(); Soiree.frame(M); }; }
+{ const draw = render; render = () => { draw(); Soiree.frame(M, render); }; }
 boot();

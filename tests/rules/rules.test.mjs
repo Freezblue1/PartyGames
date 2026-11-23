@@ -239,8 +239,28 @@ describe("group leader and presence", () => {
   });
 });
 
+describe("lobby reactions", () => {
+  const react = (db, e = "🔥", by = "acct_bob", nick = "Bob") => setDoc(doc(db, "reactions/perudo_ABCD"), { e, by, nick, at: serverTimestamp() });
+  it("a player in a lobby sends a reaction everyone can see", async () => {
+    await assertSucceeds(react(bob()));
+    await assertSucceeds(setDoc(doc(guest(), "reactions/undercover_WXYZ"), { e: "😂", by: "anon_1", nick: "Invité", at: serverTimestamp() }));  // guests too
+    await assertSucceeds(getDoc(doc(alice(), "reactions/perudo_ABCD")));
+  });
+  it("only the listed emojis, in their own name, with the server time", async () => {
+    await assertFails(react(bob(), "<script>"));
+    await assertFails(react(bob(), "🔥", "acct_alice", "Alice"));
+    await assertFails(setDoc(doc(bob(), "reactions/perudo_ABCD"), { e: "🔥", by: "acct_bob", nick: "Bob", at: Timestamp.fromMillis(Date.now()) }));
+    await assertFails(setDoc(doc(bob(), "reactions/not-a-room"), { e: "🔥", by: "acct_bob", nick: "Bob", at: serverTimestamp() }));
+    await assertFails(react(nobody(), "🔥", "x", "x"));
+  });
+  it("not faster than one every 0.4 s per lobby", async () => {
+    await seed(db => setDoc(doc(db, "reactions/perudo_ABCD"), { e: "🔥", by: "acct_alice", nick: "Alice", at: Timestamp.fromMillis(Date.now()) }));
+    await assertFails(react(bob()));
+  });
+});
+
 describe("account server data", () => {
-  const paths = ["accounts/x", "accountDevices/x", "accountIps/x", "accountsArchive/x", "loginIps/x"];
+  const paths = ["accounts/x", "accountDevices/x", "accountIps/x", "accountsArchive/x", "loginIps/x", "errors/x", "errorIps/x"];
   it("no phone can read or write it", async () => {
     await seed(async db => { for (const p of paths) await setDoc(doc(db, p), { pseudo: "Alice", hash: "secret" }); });
     for (const p of paths) for (const db of [alice(), guest(), nobody()]) {

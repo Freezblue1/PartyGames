@@ -82,6 +82,19 @@ test("own account and admin tools", async ({ browser, request }) => {
     await expect(carol.page.locator("#acct")).toHaveText("👤 Carol");
   });
 
+  await test.step("a crash on a player's page shows up in the admin's Erreurs tab", async () => {
+    await carol.page.evaluate(() => setTimeout(() => { throw new Error("Boum de test"); }, 0));
+    const d = dlg(boss.page);
+    await expect.poll(async () => {
+      await d.locator('[data-so="adm-tab"][data-t="erreurs"]').click();
+      return d.locator(".so-accts").innerText().catch(() => "");
+    }, { timeout: 15_000 }).toContain("Boum de test");
+    await expect(d.locator(".so-accts li", { hasText: "Boum de test" })).toContainText("Accueil");
+    await expect(d.locator(".so-accts li", { hasText: "Boum de test" })).toContainText("Carol");
+    await d.locator('[data-so="adm-errors-clear"]').click();
+    await expect(d).toContainText("Aucun plantage signalé");
+  });
+
   await test.step("the admin sees live games and groups, and the Firebase panel", async () => {
     const d = dlg(boss.page);
     await d.locator('[data-so="adm-tab"][data-t="live"]').click();
@@ -107,7 +120,7 @@ test("own account and admin tools", async ({ browser, request }) => {
     await expect(a.locator(".so-accts li", { hasText: "Carol" })).toContainText("par lui-même");
   });
 
-  expect(errors).toEqual([]);
+  expect(errors.filter(e => !e.includes("Boum de test"))).toEqual([]);
   await carol.ctx.close();
   await boss.ctx.close();
 });
