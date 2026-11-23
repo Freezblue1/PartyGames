@@ -486,7 +486,7 @@ function playerStats(ids, hist) {
 function profile() {
   return { color: null, games: 0, wins: 0, dudos: 0, calzas: 0, titles: {}, faces: {}, recorded: [], ...store.json("profile", {}) };
 }
-function saveProfile(p) { store.set("profile", JSON.stringify(p)); }
+function saveProfile(p) { store.set("profile", JSON.stringify(p)); Soiree.statsSaved(p); }  // also kept in the account
 function recordGame(gameId, ids, rank, hist, titles) {
   const p = profile();
   if (!gameId || p.recorded.includes(gameId) || !ids.includes(M.me) || !hist.length) return;
@@ -1528,6 +1528,7 @@ async function boot() {
     M.me = u.uid;
     await Soiree.start().catch(() => null);
     if (Soiree.pseudo()) M.drafts.nick = Soiree.pseudo();
+    await Soiree.syncStats(store).catch(() => {});  // stats follow the account across devices
   }
   catch (e) {
     M.mode = "fatal";
@@ -1558,6 +1559,32 @@ async function boot() {
   M.mode = "home"; render();
   setTimeout(cleanupOldRooms, 8000);
 }
-// Shared layer (account button, own name, group, recording for replays): after every render.
+/* ---------- replay journal ----------
+   What happened, in words, rebuilt from the game's own history when a game is saved.
+   "@id" marks a player: the replay shows their name in their colour. A `board` is the score line after that moment. */
+Soiree.setJournal(() => {
+  const ord = i => `${i + 1}${i ? "e" : "er"}`;
+  const r = M.room;
+  if (!r?.gameId || !(r.order || []).length) return null;
+  const order = r.order, start = r.start || 5, dice = Object.fromEntries(order.map(id => [id, start]));
+  const players = Object.fromEntries(order.map(id => { const p = pInfo(id); return [id, { nick: p.nick, color: p.color }]; }));
+  const board = () => Object.fromEntries(order.map(id => [id, dice[id] > 0 ? plural(dice[id], "dé") : "éliminé"]));
+  const events = [{ text: `${plural(order.length, "joueur")}, ${plural(start, "dé")} chacun.`, board: board() }];
+  for (const h of r.history || []) {
+    events.push({ head: `Manche ${h.n}${h.pal ? " · palifico" : ""}`, text: `${plural(h.t, "dé")} sous les gobelets.` });
+    for (const b of h.bids || []) events.push({ text: `@${b.u} annonce ${bidText(b)}.` });
+    if (!h.bid) continue;
+    events.push({ text: h.k === "calza" ? `@${h.u} dit « Calza ! » : il y a pile ${bidText(h.bid)}.` : `@${h.u} dit « Dudo ! » : il n'y a pas ${bidText(h.bid)}.` });
+    if (h.lose) dice[h.lose] = Math.max(0, dice[h.lose] - 1);
+    if (h.gain) dice[h.gain] = Math.min(start, dice[h.gain] + 1);
+    const seen = h.count ? bidText({ q: h.count, f: h.bid.f }) : "aucun";
+    const who = h.gain ? ` @${h.gain} regagne un dé.` : h.lose ? ` @${h.lose} perd un dé${h.out ? " et quitte la partie" : ""}.` : "";
+    events.push({ text: `On soulève les gobelets : ${seen}.${who}`, tone: h.gain ? "win" : "lose", board: board() });
+  }
+  const end = r.dice || {}, rank = ranking(order, end, r.out || []);
+  return { players, events, final: { title: "Classement", rows: rank.map((id, i) => ({ who: id, text: `${ord(i)} · ${end[id] > 0 ? plural(end[id], "dé") : "éliminé"}` })) } };
+});
+
+// Shared layer (account button, own name, group, end-of-game save bar): after every render.
 { const draw = render; render = () => { draw(); Soiree.frame(M); }; }
 boot();

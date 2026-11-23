@@ -56,7 +56,7 @@ Le thème « Après minuit » n'a volontairement ni images ni descriptions. Un p
 - À la fin : chacun découvre son post-it, le classement, un **titre** pour chacun (Sherlock, Têtu, Philosophe, Sur une lancée…), toutes les questions de chacun, et un bouton pour **partager le classement en image** avec le coup de la soirée.
 - **Grand écran** : dans « Code de la partie », le modo trouve un lien à ouvrir sur une TV ou un ordi. Il montre les questions, les réponses et la table, jamais un post-it pas encore trouvé.
 - **Passer la main** : le modo peut donner son rôle à quelqu'un d'autre, même en pleine partie. S'il perd la connexion plus d'une minute, les autres peuvent **devenir le modo** et la partie continue.
-- **Mon profil** (sur l'accueil du jeu) : tes stats gardées sur ton téléphone (parties, victoires, persos trouvés, ton record, les persos que tu as été, ton titre fétiche).
+- **Mon profil** (sur l'accueil du jeu) : tes stats (sur ce téléphone, et dans ton compte si tu es connecté) (parties, victoires, persos trouvés, ton record, les persos que tu as été, ton titre fétiche).
 - **Installer l'appli** : bouton sur l'accueil (Android), ou Partager › « Sur l'écran d'accueil » (iPhone).
 - Les parties créées sur ton téléphone et inutilisées depuis 24 h sont supprimées toutes seules de Firebase.
 - Pas de réseau ? **Jouer sur un seul téléphone** : à ton tour, tu colles le téléphone sur ton front, écran vers les autres. Ils voient ton perso et touchent les réponses.

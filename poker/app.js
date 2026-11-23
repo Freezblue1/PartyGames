@@ -288,7 +288,8 @@ function finish(S, D) {
     if (i != null) x[i]++;
   }
   const w = [...new Set(pots.filter(p => !p.ret).flatMap(p => p.win))];
-  S.entry = { n: S.hand, pot: total, bf: byFold, pf: byFold && S.street === 0, d: delta, w, sc, a: acts, rb: S.rb || [], bust: busted };
+  // log and board: the hand told action by action in replays.
+  S.entry = { n: S.hand, pot: total, bf: byFold, pf: byFold && S.street === 0, d: delta, w, sc, a: acts, rb: S.rb || [], bust: busted, log: S.log.slice(-120), board: S.board || [] };
   if (Array.isArray(S.history)) S.history = [...S.history, S.entry];
 }
 /* Shuffles, deals two cards to each seat and five for the board, then posts the blinds. */
@@ -679,7 +680,7 @@ function playerStats(S, hist) {
 function profile() {
   return { color: null, games: 0, wins: 0, pots: 0, big: 0, best: -1, titles: {}, recorded: [], ...store.json("profile", {}) };
 }
-function saveProfile(p) { store.set("profile", JSON.stringify(p)); }
+function saveProfile(p) { store.set("profile", JSON.stringify(p)); Soiree.statsSaved(p); }  // also kept in the account
 function recordGame(S, rank, hist, titles) {
   const p = profile();
   if (!S.gameId || p.recorded.includes(S.gameId) || !(S.order || []).includes(M.me) || !hist.length) return;
@@ -1736,6 +1737,7 @@ async function boot() {
     M.me = u.uid;
     await Soiree.start().catch(() => null);
     if (Soiree.pseudo()) M.drafts.nick = Soiree.pseudo();
+    await Soiree.syncStats(store).catch(() => {});  // stats follow the account across devices
   }
   catch (e) {
     M.mode = "fatal";
@@ -1766,6 +1768,34 @@ async function boot() {
   M.mode = "home"; render();
   setTimeout(cleanupOldRooms, 8000);
 }
-// Shared layer (account button, own name, group, recording for replays): after every render.
+/* ---------- replay journal ----------
+   What happened, in words, rebuilt from the game's own history when a game is saved.
+   "@id" marks a player: the replay shows their name in their colour. A `board` is the score line after that moment. */
+Soiree.setJournal(() => {
+  const ord = i => `${i + 1}${i ? "e" : "er"}`;
+  const r = M.room;
+  if (!r?.gameId || !(r.order || []).length) return null;
+  const order = r.order, net = Object.fromEntries(order.map(id => [id, 0]));
+  const players = Object.fromEntries(order.map(id => { const p = pInfo(id); return [id, { nick: p.nick, color: p.color }]; }));
+  const signed = n => (n > 0 ? "+" : "") + fmt(n);
+  const board = () => Object.fromEntries(order.map(id => [id, signed(net[id] || 0)]));
+  const cards = cs => cs.map(c => RANKS[rk(c)] + SUITS[st(c)]).join(" ");
+  const events = [{ text: `${plural(order.length, "joueur")}, ${fmt(r.start || 1000)} jetons chacun.`, board: board() }];
+  for (const h of M.hands) {
+    events.push({ head: `Main ${h.n}` });
+    for (const l of h.log || []) {
+      if (l.k === "street") { if (l.s) events.push({ text: `${STREETS[l.s]}${(h.board || []).length ? " : " + cards(h.board.slice(0, [0, 3, 4, 5][l.s])) : ""}` }); continue; }
+      events.push({ text: `@${l.u} ${LOG_TEXT[l.k] ? LOG_TEXT[l.k](l.a) : l.k}.` });
+    }
+    for (const [u, d] of Object.entries(h.d || {})) net[u] = (net[u] || 0) + (+d || 0);
+    const w = h.w || [], how = h.bf ? " : les autres se sont couchés" : w[0] && h.sc?.[w[0]] != null ? ` avec ${handName(h.sc[w[0]])}` : "";
+    events.push({ text: `${w.map(u => "@" + u).join(" et ") || "Personne"} ${w.length > 1 ? "se partagent" : "remporte"} le pot de ${fmt(h.pot)}${how}.`, tone: "win", board: board() });
+    for (const u of h.bust || []) events.push({ text: `@${u} n'a plus de jetons.`, tone: "lose" });
+  }
+  const rank = ranking(r), out = r.out || [];
+  return { players, events, final: { title: "Classement", rows: rank.map((id, i) => ({ who: id, text: `${ord(i)} · ${out.includes(id) ? "éliminé" : fmt(r.stacks?.[id] || 0) + " jetons"}` })) } };
+});
+
+// Shared layer (account button, own name, group, end-of-game save bar): after every render.
 { const draw = render; render = () => { draw(); Soiree.frame(M); }; }
 boot();

@@ -30,7 +30,6 @@ const voteFor = (page, nick) => page.locator('[data-act="vote"]', { hasText: nic
 // Players are not instant: half a second between actions, so each moment of the game gets its own replay frame
 // (the recorder keeps at most one frame every 150 ms).
 const beat = page => page.waitForTimeout(500);
-const playerText = page => page.locator("#app").innerText();
 
 test("two players: group, full game, saves, replay", async ({ browser }) => {
   const errors = [];
@@ -110,38 +109,90 @@ test("two players: group, full game, saves, replay", async ({ browser }) => {
     resultUrl = await saves.filter({ hasText: "Résultat" }).locator("a").getAttribute("href");
   });
 
-  await test.step("the replay plays the game back, as Bob saw it", async () => {
+  await test.step("the replay rebuilds the game move by move, from the game's own journal", async () => {
     await bob.page.goto(replayUrl);
     const bar = bob.page.locator(".so-player .so-bar-txt");
     await expect(bar).toContainText("Revoir · Qui de nous");
     const total = Number((await bar.innerText()).match(/\/(\d+)/)[1]);
     expect(total).toBeGreaterThan(5);
-    expect(await bob.page.locator("#app").evaluate(el => getComputedStyle(el).pointerEvents)).toBe("none");
-
+    const shown = bob.page.locator(".so-log li:not([hidden])");
     await bob.page.locator('[data-p="first"]').click();
-    await expect(bob.page.locator("#app")).toContainText("En attente du modo");  // the lobby
-    let sawVote = false;
-    for (let i = 1; i < total && !sawVote; i++) {
-      await bob.page.locator('[data-p="next"]').click();
-      sawVote = (await playerText(bob.page)).includes("Tu as voté pour Alice");  // his own vote, step by step
-    }
-    expect(sawVote).toBe(true);
-    await bob.page.locator('[data-p="last"]').click();
+    await expect(shown).toHaveCount(1);
+    await expect(shown.first()).toContainText("2 joueurs autour de la table");
+    await expect(bob.page.locator(".so-board")).toContainText("0 verdict");
+    for (let i = 1; i < total; i++) await bob.page.locator('[data-p="next"]').click();
     await expect(bar).toContainText(`${total}/${total}`);
-    await expect(bob.page.locator("#app")).toContainText("Palmarès · 2 questions");
+    const log = bob.page.locator(".so-log");
+    await expect(log).toContainText("Question 1");
+    await expect(log).toContainText("Bob vote pour Alice");          // his own vote, never Alice's secret one
+    await expect(log).not.toContainText("Alice vote pour");
+    await expect(log).toContainText("Verdict : Alice et Bob (1 vote)");
+    await expect(bob.page.locator(".so-board")).toContainText("2 verdicts");
+    await expect(bob.page.locator(".so-final")).toContainText("Palmarès");
+    // names are drawn in the players' colours
+    await expect(log.locator(".so-name").first()).toBeVisible();
   });
 
-  await test.step("the saved result opens on the final screen", async () => {
+  await test.step("the saved result opens on the final ranking", async () => {
     await bob.page.goto(resultUrl);
     await expect(bob.page.locator(".so-player .so-bar-txt")).toContainText("Résultat");
-    await expect(bob.page.locator("#app")).toContainText("Palmarès · 2 questions");
+    await expect(bob.page.locator(".so-final")).toContainText("Palmarès");
+    await expect(bob.page.locator(".so-final li")).toHaveCount(2);
     await expect(bob.page.locator('[data-p="next"]')).toHaveCount(0);
   });
 
-  await test.step("the group is still there after the game", async () => {
+  await test.step("Bob shares the replay: someone without an account can watch it, a private one stays closed", async () => {
     await bob.page.goto("/");
+    await bob.page.locator("#acct").click();
+    await bob.page.locator('[data-so="tab"][data-t="saves"]').click();
+    const row = bob.page.locator(".so-save", { hasText: "Partie entière" });
+    await row.locator('[data-so="share"]').click();
+    await expect(row).toContainText("Partagée");
+    const stranger = await player(browser, "Inconnu", errors);
+    await stranger.page.goto(replayUrl);
+    await expect(stranger.page.locator(".so-player .so-bar-txt")).toContainText("Revoir · Qui de nous");
+    await stranger.page.goto(resultUrl);
+    await expect(stranger.page.locator("#app")).toContainText("n'est pas partagée");
+    await stranger.ctx.close();
+    await bob.page.locator('[data-so="close"]').click();
+  });
+
+  await test.step("the stats of the game are in Bob's account", async () => {
+    await bob.page.locator("#acct").click();
+    await bob.page.locator('[data-so="tab"][data-t="stats"]').click();
+    await expect(bob.page.locator(".so-statlist li", { hasText: "Qui de nous" })).toContainText("1 partie");
+    await bob.page.locator('[data-so="close"]').click();
+  });
+
+  await test.step("the group is still there, with who is online and where, and a ranking", async () => {
     await expect(bob.page.locator(".so-pcode")).toHaveText(group);
-    await expect(bob.page.locator(".so-now")).toContainText(`Qui de nous… · partie ${room}`);
+    await expect(bob.page.locator(".so-now").first()).toContainText(`Qui de nous… · partie ${room}`);
+    await expect(bob.page.locator(".so-members li.so-on")).toHaveCount(2);
+    await expect(bob.page.locator(".so-members li", { hasText: "Alice" })).toContainText("dans Qui de nous");
+    await expect(bob.page.locator(".so-members li", { hasText: "Bob" })).toContainText("sur l'accueil");
+    await bob.page.locator("[data-so-rank] summary").click();
+    await expect(bob.page.locator("[data-so-rank] .so-rank li")).toHaveCount(2);
+  });
+
+  await test.step("Alice hands the leader role to Bob", async () => {
+    await alice.page.goto("/");
+    alice.page.once("dialog", d => d.accept());
+    await alice.page.locator('.so-members li', { hasText: "Bob" }).locator('[data-so="party-host"]').click();
+    await expect(bob.page.locator(".so-members li", { hasText: "Bob" })).toContainText("Chef");
+    await expect(bob.page.locator("#party")).toContainText("Choisis un jeu ci-dessous");
+    await expect(alice.page.locator("#party")).toContainText("Quand Bob lance un jeu");
+  });
+
+  await test.step("when the leader leaves, the role passes on and the group lives on", async () => {
+    bob.page.once("dialog", d => d.accept());
+    await bob.page.locator('[data-so="party-leave"]').click();
+    await expect(bob.page.locator('[data-so="party-create"]')).toBeVisible();
+    await expect(alice.page.locator(".so-members li")).toHaveCount(1);
+    await expect(alice.page.locator(".so-members li", { hasText: "Alice" })).toContainText("Chef");
+    // Bob comes back with the same code: same group
+    await bob.page.locator("#so-party-code").fill(group);
+    await bob.page.locator('#party button[type="submit"]').click();
+    await expect(bob.page.locator(".so-members li")).toHaveCount(2);
   });
 
   expect(errors, "no JavaScript errors on either page").toEqual([]);

@@ -1308,6 +1308,31 @@ async function boot() {
   }
   M.mode = "home"; render();
 }
-// Shared layer (account button, own name, group, recording for replays): after every render.
+/* ---------- replay journal ----------
+   What happened, in words, rebuilt from the game's own history when a game is saved.
+   "@id" marks a player: the replay shows their name in their colour. A `board` is the score line after that moment. */
+Soiree.setJournal(() => {
+  const ord = i => `${i + 1}${i ? "e" : "er"}`;
+  const r = M.room;
+  if (!r?.gameId || !(r.order || []).length) return null;
+  const ids = [...new Set([...(r.order || []), ...Object.keys(r.cast || {})])];
+  const players = Object.fromEntries(ids.map(id => { const p = who(id); return [id, { nick: p.nick, color: p.color }]; }));
+  const pts = Object.fromEntries(ids.map(id => [id, 0]));
+  const board = () => Object.fromEntries(ids.map(id => [id, plural(pts[id], "point")]));
+  const events = [{ text: `${plural(ids.length, "joueur")}, ${plural((r.deck || []).length, "photo")} au programme.`, board: board() }];
+  const rounds = Object.keys(r.answers || {}).map(k => +k.slice(1)).filter(n => n > 0).sort((a, b) => a - b);
+  for (const n of rounds) {
+    const owner = r.answers["r" + n], gains = r.gains?.["r" + n] || {}, vm = votesMap(n, false);
+    events.push({ head: `Photo ${n}`, text: "À qui est cette photo ?" });
+    for (const [v, t] of Object.entries(vm)) if (v !== owner) events.push({ text: `@${v} pense que c'est @${t}.` });
+    for (const [u, p] of Object.entries(gains)) pts[u] = (pts[u] || 0) + (+p || 0);
+    const found = Object.entries(gains).map(([u, p]) => `@${u} (+${p})`);
+    events.push({ text: owner && owner !== "?" ? `C'était la photo de @${owner}. ${found.length ? "Bien vu : " + found.join(", ") + "." : "Personne n'a trouvé."}` : "La photo d'un joueur parti.", tone: "win", board: board() });
+  }
+  const sorted = ids.slice().sort((a, b) => pts[b] - pts[a]);
+  return { players, events, final: { title: "Classement", rows: sorted.map((id, i) => ({ who: id, text: `${ord(i)} · ${plural(pts[id], "point")}` })) } };
+});
+
+// Shared layer (account button, own name, group, end-of-game save bar): after every render.
 { const draw = render; render = () => { draw(); Soiree.frame(M); }; }
 boot();

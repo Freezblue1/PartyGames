@@ -15,12 +15,15 @@ const env = {
   FIREBASE_CLIENT_EMAIL: "tests@qui-de-nous-7244f.iam.gserviceaccount.com",
   FIREBASE_PRIVATE_KEY: privateKey.export({ type: "pkcs8", format: "pem" }),
   FIRESTORE_EMULATOR_HOST: process.env.FIRESTORE_EMULATOR_HOST || "127.0.0.1:8181",
-  ADMIN_PSEUDO: "Boss"
+  FIREBASE_AUTH_EMULATOR_HOST: process.env.FIREBASE_AUTH_EMULATOR_HOST || "127.0.0.1:9099",
+  ADMIN_PSEUDO: ""
 };
 const TYPES = { ".html": "text/html; charset=utf-8", ".js": "text/javascript", ".mjs": "text/javascript", ".css": "text/css", ".json": "application/json", ".png": "image/png", ".webmanifest": "application/manifest+json", ".svg": "image/svg+xml" };
 
 http.createServer(async (req, res) => {
   const url = new URL(req.url, "http://x");
+  // Test-only switch, like editing ADMIN_PSEUDO on Netlify after the account exists.
+  if (url.pathname === "/__test/admin") { env.ADMIN_PSEUDO = url.searchParams.get("pseudo") || ""; res.writeHead(204); res.end(); return; }
   if (url.pathname.startsWith("/api/compte/")) {
     const body = await new Promise(ok => { let d = ""; req.on("data", c => d += c); req.on("end", () => ok(d)); });
     const ip = req.headers["x-test-ip"] || req.socket.remoteAddress;

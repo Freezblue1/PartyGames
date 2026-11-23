@@ -31,14 +31,33 @@ service cloud.firestore {
         && (request.resource.data.get('party', null) == null
           || (request.resource.data.party is string && request.resource.data.party.size() == 4));
 
-      // Parties et résultats gardés : visibles seulement par leur propriétaire (et l'admin).
+      // Stats d'un jeu, gardées dans le compte (elles suivent le joueur d'un appareil à l'autre).
+      // Lisibles par les joueurs connectés : c'est ce qui fait le classement du groupe.
+      match /stats/{game} {
+        allow read: if signedIn();
+        allow write: if hasAccount() && request.auth.uid == uid
+          && game in ['quidenous', 'undercover', 'loup-garou', 'photoroulette', 'blanc-manger-coco', 'perudo', 'quisuisje', 'poker', 'kems']
+          && request.resource.data.keys().hasOnly(['data', 'games', 'wins', 'at'])
+          && request.resource.data.data is string && request.resource.data.data.size() <= 200000
+          && request.resource.data.games is int && request.resource.data.wins is int;
+      }
+
+      // Parties et résultats gardés : visibles par leur propriétaire (et l'admin),
+      // et par tout le monde quand le propriétaire les a partagés (lien public).
       match /saves/{sid} {
-        allow read, delete: if request.auth != null && request.auth.uid == uid;
+        allow read: if (request.auth != null && request.auth.uid == uid) || resource.data.get('public', false) == true;
+        allow delete: if request.auth != null && request.auth.uid == uid;
         allow create: if hasAccount() && request.auth.uid == uid
           && request.resource.data.kind in ['replay', 'result']
+          && request.resource.data.get('public', false) == false
           && request.resource.data.chunks is int && request.resource.data.chunks >= 1 && request.resource.data.chunks <= 8;
+        allow update: if hasAccount() && request.auth.uid == uid
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['public'])
+          && request.resource.data.public is bool;
         match /chunks/{cid} {
-          allow read, delete: if request.auth != null && request.auth.uid == uid;
+          allow read: if (request.auth != null && request.auth.uid == uid)
+            || get(/databases/$(database)/documents/profiles/$(uid)/saves/$(sid)).data.get('public', false) == true;
+          allow delete: if request.auth != null && request.auth.uid == uid;
           allow create: if hasAccount() && request.auth.uid == uid
             && request.resource.data.d is string && request.resource.data.d.size() <= 900000;
         }
@@ -46,24 +65,44 @@ service cloud.firestore {
     }
 
     /* ===================== Groupes (accueil) ===================== */
-    // Le chef du groupe (hostUid) est le seul à changer `current` : la partie où tout le groupe le suit.
+    // Le chef du groupe (hostUid) choisit `current` : la partie où tout le groupe le suit.
+    // Il peut passer son rôle à un membre. Si le chef est parti, ou n'est plus là depuis 10 minutes,
+    // un membre peut prendre sa place.
     match /parties/{code} {
+      function member(u) { return /databases/$(database)/documents/parties/$(code)/members/$(u); }
+      function hostAway() {
+        return !exists(member(resource.data.hostUid))
+          || get(member(resource.data.hostUid)).data.get('seen', request.time) < request.time - duration.value(10, 'm');
+      }
       allow read: if signedIn();
       allow create: if hasAccount() && code.size() == 4
         && request.resource.data.keys().hasOnly(['hostUid', 'hostPseudo', 'createdAt', 'current'])
         && request.resource.data.hostUid == request.auth.uid
         && request.resource.data.hostPseudo == request.auth.token.pseudo;
-      allow update: if hasAccount() && resource.data.hostUid == request.auth.uid
-        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['current']);
+      allow update: if hasAccount() && (
+        // le chef : la partie du groupe, ou passer le rôle à un membre (sous son pseudo)
+        (resource.data.hostUid == request.auth.uid
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['current', 'hostUid', 'hostPseudo'])
+          && (request.resource.data.hostUid == resource.data.hostUid
+            || (exists(member(request.resource.data.hostUid))
+              && request.resource.data.hostPseudo == get(member(request.resource.data.hostUid)).data.pseudo)))
+        // un membre devient chef quand le chef est parti ou absent
+        || (exists(member(request.auth.uid)) && hostAway()
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['hostUid', 'hostPseudo'])
+          && request.resource.data.hostUid == request.auth.uid
+          && request.resource.data.hostPseudo == request.auth.token.pseudo));
       allow delete: if request.auth != null && resource.data.hostUid == request.auth.uid;
-      // Chacun s'inscrit lui-même, sous son pseudo ; le chef peut retirer quelqu'un.
+      // Chacun s'inscrit lui-même, sous son pseudo, et dit qu'il est là (seen, toujours l'heure du serveur) et où (where).
+      // Le chef peut retirer quelqu'un.
       match /members/{uid} {
         allow read: if signedIn();
         allow create, update: if hasAccount() && request.auth.uid == uid
           && exists(/databases/$(database)/documents/parties/$(code))
-          && request.resource.data.keys().hasOnly(['pseudo', 'color', 'joinedAt'])
+          && request.resource.data.keys().hasOnly(['pseudo', 'color', 'joinedAt', 'seen', 'where'])
           && request.resource.data.pseudo == request.auth.token.pseudo
-          && isColor(request.resource.data.color);
+          && isColor(request.resource.data.color)
+          && (!('seen' in request.resource.data) || request.resource.data.seen == request.time)
+          && (!('where' in request.resource.data) || (request.resource.data.where is string && request.resource.data.where.size() <= 24));
         allow delete: if request.auth != null && (request.auth.uid == uid
           || get(/databases/$(database)/documents/parties/$(code)).data.hostUid == request.auth.uid);
       }
@@ -1088,5 +1127,6 @@ service cloud.firestore {
     match /accountDevices/{id} { allow read, write: if false; }
     match /accountIps/{id} { allow read, write: if false; }
     match /accountsArchive/{id} { allow read, write: if false; }
+    match /loginIps/{id} { allow read, write: if false; }
   }
 }

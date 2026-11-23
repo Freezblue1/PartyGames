@@ -3,7 +3,7 @@
 import { describe, it, before, after, beforeEach } from "node:test";
 import { readFileSync } from "node:fs";
 import { initializeTestEnvironment, assertFails, assertSucceeds } from "@firebase/rules-unit-testing";
-import { doc, setDoc, getDoc, getDocs, updateDoc, deleteDoc, collection, writeBatch, setLogLevel } from "firebase/firestore";
+import { doc, setDoc, getDoc, getDocs, updateDoc, deleteDoc, collection, writeBatch, setLogLevel, serverTimestamp, Timestamp } from "firebase/firestore";
 
 setLogLevel("silent");  // refused writes are expected here; keep the output to the test results
 
@@ -148,8 +148,99 @@ describe("groups", () => {
   });
 });
 
+describe("stats in the account", () => {
+  const stats = { data: JSON.stringify({ games: 3, wins: 1 }), games: 3, wins: 1, at: 1 };
+  it("an account saves its stats for a game", () => assertSucceeds(setDoc(doc(alice(), "profiles/acct_alice/stats/perudo"), stats)));
+  it("not for a game that does not exist, not with extra fields", async () => {
+    await assertFails(setDoc(doc(alice(), "profiles/acct_alice/stats/chess"), stats));
+    await assertFails(setDoc(doc(alice(), "profiles/acct_alice/stats/perudo"), { ...stats, admin: true }));
+  });
+  it("nobody writes someone else's stats; signed-in players read them (group ranking)", async () => {
+    await assertFails(setDoc(doc(bob(), "profiles/acct_alice/stats/perudo"), stats));
+    await seed(db => setDoc(doc(db, "profiles/acct_alice/stats/perudo"), stats));
+    await assertSucceeds(getDoc(doc(bob(), "profiles/acct_alice/stats/perudo")));
+    await assertFails(getDoc(doc(nobody(), "profiles/acct_alice/stats/perudo")));
+  });
+});
+
+describe("sharing a saved game", () => {
+  const save = { kind: "replay", game: "perudo", at: 1, code: "ABCD", enc: "gzip", chunks: 1, events: 9, players: ["Alice"] };
+  const seedSave = (pub = false) => seed(async db => {
+    await setDoc(doc(db, "profiles/acct_alice/saves/s1"), { ...save, public: pub });
+    await setDoc(doc(db, "profiles/acct_alice/saves/s1/chunks/000"), { d: "H4sI" });
+  });
+  it("a save starts private", () => assertFails(setDoc(doc(alice(), "profiles/acct_alice/saves/s2"), { ...save, public: true })));
+  it("the owner shares it, then anyone with the link can watch it, even without an account", async () => {
+    await seedSave();
+    await assertFails(getDoc(doc(nobody(), "profiles/acct_alice/saves/s1")));
+    await assertSucceeds(updateDoc(doc(alice(), "profiles/acct_alice/saves/s1"), { public: true }));
+    for (const db of [nobody(), guest(), bob()]) {
+      await assertSucceeds(getDoc(doc(db, "profiles/acct_alice/saves/s1")));
+      await assertSucceeds(getDoc(doc(db, "profiles/acct_alice/saves/s1/chunks/000")));
+    }
+  });
+  it("sharing one save does not open the others, nor the list", async () => {
+    await seedSave(true);
+    await seed(db => setDoc(doc(db, "profiles/acct_alice/saves/s9"), save));
+    await assertFails(getDoc(doc(bob(), "profiles/acct_alice/saves/s9")));
+    await assertFails(getDocs(collection(bob(), "profiles/acct_alice/saves")));
+  });
+  it("only the owner shares or unshares, and can change nothing else", async () => {
+    await seedSave();
+    await assertFails(updateDoc(doc(bob(), "profiles/acct_alice/saves/s1"), { public: true }));
+    await assertFails(updateDoc(doc(alice(), "profiles/acct_alice/saves/s1"), { public: true, game: "poker" }));
+    await assertFails(updateDoc(doc(alice(), "profiles/acct_alice/saves/s1"), { public: "yes" }));
+  });
+});
+
+describe("group leader and presence", () => {
+  const ago = min => Timestamp.fromMillis(Date.now() - min * 60000);
+  const seedGroup = (hostSeenMinAgo = 0, hostHere = true) => seed(async db => {
+    await setDoc(doc(db, "parties/ABCD"), { hostUid: "acct_alice", hostPseudo: "Alice", createdAt: 1, current: null });
+    if (hostHere) await setDoc(doc(db, "parties/ABCD/members/acct_alice"), { pseudo: "Alice", color: "#18825A", joinedAt: 1, seen: ago(hostSeenMinAgo) });
+    await setDoc(doc(db, "parties/ABCD/members/acct_bob"), { pseudo: "Bob", color: "#2F62D0", joinedAt: 2, seen: ago(0) });
+  });
+  it("the leader hands the role to a member", async () => {
+    await seedGroup();
+    await assertSucceeds(updateDoc(doc(alice(), "parties/ABCD"), { hostUid: "acct_bob", hostPseudo: "Bob" }));
+  });
+  it("…not to someone outside the group, nor under a wrong name", async () => {
+    await seedGroup();
+    await assertFails(updateDoc(doc(alice(), "parties/ABCD"), { hostUid: "acct_carol", hostPseudo: "Carol" }));
+    await assertFails(updateDoc(doc(alice(), "parties/ABCD"), { hostUid: "acct_bob", hostPseudo: "Boss" }));
+  });
+  it("a member cannot take over while the leader is around", async () => {
+    await seedGroup(2);
+    await assertFails(updateDoc(doc(bob(), "parties/ABCD"), { hostUid: "acct_bob", hostPseudo: "Bob" }));
+  });
+  it("a member takes over when the leader has been away 10 minutes", async () => {
+    await seedGroup(11);
+    await assertSucceeds(updateDoc(doc(bob(), "parties/ABCD"), { hostUid: "acct_bob", hostPseudo: "Bob" }));
+  });
+  it("a member takes over when the leader left the group", async () => {
+    await seedGroup(0, false);
+    await assertSucceeds(updateDoc(doc(bob(), "parties/ABCD"), { hostUid: "acct_bob", hostPseudo: "Bob" }));
+  });
+  it("taking over: only for yourself, and nothing else changes", async () => {
+    await seedGroup(11);
+    await assertFails(updateDoc(doc(bob(), "parties/ABCD"), { hostUid: "acct_carol", hostPseudo: "Carol" }));
+    await assertFails(updateDoc(doc(bob(), "parties/ABCD"), { hostUid: "acct_bob", hostPseudo: "Bob", current: { game: "poker", room: "EVIL", at: 1 } }));
+    await assertFails(updateDoc(doc(carol(), "parties/ABCD"), { hostUid: "acct_carol", hostPseudo: "Carol" }));  // not a member
+  });
+  it("a member says they are here (server time) and where", async () => {
+    await seedGroup();
+    await assertSucceeds(updateDoc(doc(bob(), "parties/ABCD/members/acct_bob"), { seen: serverTimestamp(), where: "perudo" }));
+  });
+  it("nobody can fake their presence or someone else's", async () => {
+    await seedGroup();
+    await assertFails(updateDoc(doc(bob(), "parties/ABCD/members/acct_bob"), { seen: Timestamp.fromMillis(Date.now() + 86400000) }));
+    await assertFails(updateDoc(doc(bob(), "parties/ABCD/members/acct_alice"), { seen: serverTimestamp() }));
+    await assertFails(updateDoc(doc(bob(), "parties/ABCD/members/acct_bob"), { where: "x".repeat(40) }));
+  });
+});
+
 describe("account server data", () => {
-  const paths = ["accounts/x", "accountDevices/x", "accountIps/x", "accountsArchive/x"];
+  const paths = ["accounts/x", "accountDevices/x", "accountIps/x", "accountsArchive/x", "loginIps/x"];
   it("no phone can read or write it", async () => {
     await seed(async db => { for (const p of paths) await setDoc(doc(db, p), { pseudo: "Alice", hash: "secret" }); });
     for (const p of paths) for (const db of [alice(), guest(), nobody()]) {

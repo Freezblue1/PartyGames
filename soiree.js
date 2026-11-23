@@ -1,9 +1,12 @@
 // « Ce soir on joue » : ce qui est commun à l'accueil et aux neuf jeux.
-//   - le compte (connexion, inscription, couleur du profil) et sa fenêtre
-//   - les groupes : quand le chef du groupe entre dans une partie, tout le groupe le suit
-//   - l'enregistrement des parties, leur sauvegarde (partie entière ou résultat) et le lecteur « Revoir »
+//   - le compte (connexion, inscription, couleur, mot de passe, suppression) et sa fenêtre
+//   - les stats de chaque jeu, gardées dans le compte, et le classement du groupe
+//   - les groupes : qui est là, le chef (que l'on peut passer ou reprendre) ; quand le chef entre dans une partie,
+//     tout le groupe le suit
+//   - les sauvegardes (partie entière ou résultat), leur partage par lien et le lecteur « Revoir » :
+//     chaque jeu raconte sa partie coup par coup (son « journal »), le lecteur la reconstruit
 //   - l'espace admin
-// Les jeux l'importent (import * as S from "../soiree.js") ; l'accueil appelle mountHub().
+// Les jeux l'importent (import * as Soiree from "../soiree.js") ; l'accueil appelle mountHub().
 import { firebaseConfig } from "./config.js";
 
 const FB = window.LG_FB || window.UC_FB || "https://www.gstatic.com/firebasejs/10.12.2/";
@@ -12,18 +15,24 @@ export const GAMES = {
   quidenous: "Qui de nous…", undercover: "Undercover", "loup-garou": "Loup-Garou", photoroulette: "Photo Roulette",
   "blanc-manger-coco": "Blanc-manger coco", perudo: "Perudo", quisuisje: "Qui suis-je ?", poker: "Poker", kems: "Kems"
 };
+const ROOM_COLS = { quidenous: "rooms", undercover: "ucRooms", "loup-garou": "lgRooms", photoroulette: "prRooms", "blanc-manger-coco": "bmRooms", perudo: "pdRooms", quisuisje: "qsRooms", poker: "pkRooms", kems: "kmRooms" };
+const NO_TV = new Set(["photoroulette"]);
 const ROOT = new URL("./", import.meta.url);
 const GAME = (() => { const seg = decodeURIComponent(location.pathname.slice(ROOT.pathname.length).split("/")[0]); return GAMES[seg] ? seg : null; })();
 const CODE_CHARS = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
-const CHUNK = 900000, MAX_SAVE = 8 * CHUNK, MAX_FRAMES = 4000;
+const CHUNK = 900000, MAX_SAVE = 8 * CHUNK;
+const ONLINE_MS = 100 * 1000, BEAT_MS = 45 * 1000, HOST_AWAY_MS = 10 * 60 * 1000;
 const DEV = /^(localhost|127\.0\.0\.1|\[::1\])$/.test(location.hostname);
 
 const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const when = ms => ms ? new Date(ms).toLocaleString("fr-FR", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" }) : "—";
+const ago = ms => { const m = Math.round((Date.now() - ms) / 60000); return !ms ? "—" : m < 1 ? "à l'instant" : m < 60 ? `il y a ${m} min` : m < 1440 ? `il y a ${Math.round(m / 60)} h` : `il y a ${Math.round(m / 1440)} j`; };
+const tsMs = t => t?.toMillis ? t.toMillis() : +t || 0;
 const local = {
   get(k) { try { return localStorage.getItem(k); } catch { return null; } },
   set(k, v) { try { v == null ? localStorage.removeItem(k) : localStorage.setItem(k, v); } catch {} }
 };
+const errText = err => err?.code ? "Action refusée (" + err.code + ")." : err?.message || "Ça n'a pas marché.";
 
 /* ---------- Firebase (the same instance as the game's) ---------- */
 let A = null, auth = null, Fs = null, fs = null, fbP = null;
@@ -92,7 +101,9 @@ async function api(action, body) {
   if (!res.ok) throw new Error(data.error || "Ça n'a pas marché. Réessaie.");
   return data;
 }
-const adminApi = async body => api("admin", { ...body, idToken: await auth.currentUser.getIdToken() });
+const withSession = async body => ({ ...body, idToken: await auth.currentUser.getIdToken() });
+const adminApi = async body => api("admin", await withSession(body));
+const meApi = async body => api("moi", await withSession(body));
 
 /* ---------- styles ---------- */
 function ensureCss() {
@@ -101,29 +112,85 @@ function ensureCss() {
   l.id = "so-css"; l.rel = "stylesheet"; l.href = new URL("soiree.css", ROOT).href;
   document.head.appendChild(l);
 }
+function avatar(c, name, cls = "") { return `<span class="so-av ${cls}" style="background:${esc(c)}">${esc((name || "?")[0])}</span>`; }
+
+/* ---------- stats, kept in the account ----------
+   Each game keeps its stats in the phone's storage (store "profile"). With an account they also live in
+   profiles/{uid}/stats/{game}, so they follow the player to any phone. A guest's own stats are put aside
+   ("profile-guest") while an account is signed in on the phone, and come back when it signs out. */
+let statsOwner = "";
+export async function syncStats(store) {
+  if (!GAME || replaying) return;
+  const owner = store.get("profile-owner") || "";
+  if (!account) {
+    if (owner) { store.set("profile", store.get("profile-guest")); store.set("profile-guest", null); store.set("profile-owner", null); }
+    statsOwner = "";
+    return;
+  }
+  if (!owner) store.set("profile-guest", store.get("profile"));
+  let remote = null;
+  try { const s = await Fs.getDoc(ref("profiles", account.uid, "stats", GAME)); if (s.exists()) remote = JSON.parse(s.data().data); } catch {}
+  statsOwner = account.uid;
+  const mine = owner === account.uid ? store.json("profile", null) : null;
+  if (mine && (+mine.games || 0) > (+remote?.games || 0)) pushStats(mine);                      // played offline last time: the phone is ahead
+  else if (remote) store.set("profile", JSON.stringify(remote));
+  else if (!owner) { const p = store.json("profile", null); if (p && p.games) pushStats(p); }  // first time: this phone's stats become the account's
+  else if (owner !== account.uid) store.set("profile", null);                                 // another account's stats were cached here
+  store.set("profile-owner", account.uid);
+}
+function pushStats(p) {
+  return Fs.setDoc(ref("profiles", account.uid, "stats", GAME), { data: JSON.stringify(p), games: Math.trunc(+p.games || 0), wins: Math.trunc(+p.wins || 0), at: Date.now() })
+    .catch(e => console.warn("stats not saved to the account:", e?.code || e));
+}
+// Called by a game each time it saves its stats (once per game): sent right away, before the player leaves.
+export function statsSaved(p) {
+  if (!account || replaying || !GAME || statsOwner !== account.uid) return;
+  pushStats(p);
+}
+async function loadStats(uid) {
+  const q = await Fs.getDocs(Fs.collection(fs, "profiles", uid, "stats"));
+  return q.docs.map(d => { let data = {}; try { data = JSON.parse(d.data().data); } catch {} return { game: d.id, games: d.data().games || 0, wins: d.data().wins || 0, data }; });
+}
+const topOf = o => Object.entries(o || {}).sort((a, b) => b[1] - a[1])[0]?.[0] || "";
 
 /* ---------- account window ---------- */
 let dlg = null;
-const ui = { tab: "profil", mode: "connexion", err: "", busy: false, saves: null, adm: null, admUser: null, admSaves: null };
+const ui = { tab: "profil", mode: "connexion", err: "", ok: "", busy: false, delOpen: false, saves: null, stats: null, adm: null, admTab: "comptes", admUser: null, admSaves: null, live: null, usage: null, counts: null };
 
-function avatar(c, name, cls = "") { return `<span class="so-av ${cls}" style="background:${esc(c)}">${esc((name || "?")[0])}</span>`; }
 function saveRow(s, uid, mine) {
-  const href = new URL(`${s.game}/?revoir=${encodeURIComponent(uid + "." + s.id)}`, ROOT).href;
+  const link = new URL(`${s.game}/?revoir=${encodeURIComponent(uid + "." + s.id)}`, ROOT).href;
   return `<li class="so-save">
-    <div class="so-save-main"><b>${esc(GAMES[s.game] || s.game)}</b> <span class="so-tag">${s.kind === "result" ? "Résultat" : "Partie entière"}</span>
+    <div class="so-save-main"><b>${esc(GAMES[s.game] || s.game)}</b> <span class="so-tag">${s.kind === "result" ? "Résultat" : "Partie entière"}</span>${s.public ? ` <span class="so-tag so-pub">Partagée</span>` : ""}
       <small>${when(s.at)}${s.players?.length ? " · " + esc(s.players.slice(0, 8).join(", ")) : ""}</small></div>
-    <div class="so-save-acts"><a class="so-btn so-sm" href="${href}">${s.kind === "result" ? "Voir" : "Revoir"}</a>
+    <div class="so-save-acts"><a class="so-btn so-sm" href="${link}">${s.kind === "result" ? "Voir" : "Revoir"}</a>
+      ${mine ? (s.public
+        ? `<button class="so-btn so-sm" data-so="share" data-id="${esc(s.id)}" data-link="${esc(link)}">Copier le lien</button><button class="so-btn so-sm so-ghost" data-so="unshare" data-id="${esc(s.id)}">Ne plus partager</button>`
+        : `<button class="so-btn so-sm" data-so="share" data-id="${esc(s.id)}" data-link="${esc(link)}">Partager</button>`) : ""}
       ${mine || isAdmin() ? `<button class="so-btn so-sm so-ghost" data-so="save-del" data-uid="${esc(uid)}" data-id="${esc(s.id)}" aria-label="Supprimer">✕</button>` : ""}</div>
   </li>`;
 }
 function savesList(list, uid, mine) {
   if (!list) return `<p class="so-hint">Chargement…</p>`;
   if (!list.length) return `<p class="so-hint">${mine ? "Aucune sauvegarde pour l'instant. À la fin d'une partie, un bouton te propose de garder la partie entière ou juste le résultat." : "Aucune sauvegarde."}</p>`;
-  return `<ul class="so-saves">${list.map(s => saveRow(s, uid, mine)).join("")}</ul>`;
+  return `${mine ? `<p class="so-hint">« Partager » crée un lien : n'importe qui peut revoir la partie avec, même sans compte.</p>` : ""}<ul class="so-saves">${list.map(s => saveRow(s, uid, mine)).join("")}</ul>`;
+}
+function statsHtml(list) {
+  if (!list) return `<p class="so-hint">Chargement…</p>`;
+  const by = Object.fromEntries(list.map(s => [s.game, s]));
+  const total = list.reduce((a, s) => ({ games: a.games + s.games, wins: a.wins + s.wins }), { games: 0, wins: 0 });
+  return `<div class="so-total"><div><b>${total.games}</b><small>parties</small></div><div><b>${total.wins}</b><small>victoires</small></div><div><b>${total.games ? Math.round(100 * total.wins / total.games) : 0}%</b><small>de victoires</small></div></div>
+    <ul class="so-statlist">${Object.entries(GAMES).map(([g, name]) => {
+      const s = by[g], title = s && topOf(s.data.titles);
+      return `<li><b>${esc(name)}</b>${g === "photoroulette" ? `<small>pas de stats dans ce jeu</small>` : s && s.games
+        ? `<span>${s.games} partie${s.games > 1 ? "s" : ""} · ${s.wins} victoire${s.wins > 1 ? "s" : ""}</span>${title ? `<small>Titre fétiche : ${esc(title)}</small>` : ""}`
+        : `<small>pas encore joué avec ce compte</small>`}</li>`;
+    }).join("")}</ul>
+    <p class="so-hint">Les stats suivent ton compte sur tous tes appareils. Celles d'avant ton compte, sur ce téléphone, y ont été ajoutées.</p>`;
 }
 
 function accountHtml() {
   const err = ui.err ? `<p class="so-err" role="alert">${esc(ui.err)}</p>` : "";
+  const ok = ui.ok ? `<p class="so-ok" role="status">${esc(ui.ok)}</p>` : "";
   if (!account) {
     const signup = ui.mode === "inscription";
     return `<form class="so-stack" data-so-form="auth" novalidate>
@@ -133,48 +200,95 @@ function accountHtml() {
       </div>
       <label class="so-field"><span>Pseudo</span><input id="so-pseudo" aria-label="Pseudo" name="username" type="text" autocomplete="username" autocapitalize="off" spellcheck="false" maxlength="18" required></label>
       <label class="so-field"><span>Mot de passe</span><span class="so-pw"><input id="so-pass" aria-label="Mot de passe" name="password" type="password" autocomplete="${signup ? "new-password" : "current-password"}" maxlength="128" required><button type="button" class="so-show" data-so="show-pass" aria-pressed="false">Afficher</button></span></label>
-      <p class="so-hint">${signup ? "3 à 18 caractères pour le pseudo, 6 au moins pour le mot de passe. Un seul compte par téléphone." : "Ton pseudo et ta couleur te suivent dans tous les jeux, sur tous tes appareils."}</p>
-      ${err}
+      <p class="so-hint">${signup ? "3 à 18 caractères pour le pseudo, 6 au moins pour le mot de passe. Un seul compte par téléphone." : "Ton pseudo, ta couleur et tes stats te suivent dans tous les jeux, sur tous tes appareils."}</p>
+      ${err}${ok}
       <button class="so-btn so-primary so-big" type="submit" ${ui.busy ? "disabled" : ""}>${ui.busy ? "Un instant…" : signup ? "Créer mon compte" : "Se connecter"}</button>
     </form>`;
   }
-  const tabs = [["profil", "Profil"], ["saves", "Sauvegardes"], ...(isAdmin() ? [["admin", "Admin"]] : [])];
+  const tabs = [["profil", "Profil"], ["stats", "Stats"], ["saves", "Sauvegardes"], ...(isAdmin() ? [["admin", "Admin"]] : [])];
   let body = "";
   if (ui.tab === "profil") {
     body = `<div class="so-me">${avatar(account.color, account.pseudo, "so-xl")}<div><b>${esc(account.pseudo)}</b>${isAdmin() ? ` <span class="so-tag so-admin">Admin</span>` : ""}<small>Ton pseudo est ton nom dans tous les jeux.</small></div></div>
       <div class="so-label">Ma couleur</div>
       <div class="so-swatches" role="group" aria-label="Ma couleur">${COLORS.map(c => `<button class="so-swatch" data-so="color" data-c="${c}" style="background:${c}" aria-pressed="${account.color === c}" aria-label="Couleur ${c}"></button>`).join("")}</div>
       <p class="so-hint">Elle s'applique aux prochaines parties que tu rejoins.</p>
-      ${err}
+      ${err}${ok}
+      <details class="so-more"><summary>Changer mon mot de passe</summary>
+        <form class="so-stack" data-so-form="password">
+          <input class="so-input" id="so-cur" type="password" autocomplete="current-password" placeholder="Mot de passe actuel" aria-label="Mot de passe actuel" required>
+          <input class="so-input" id="so-new" type="password" autocomplete="new-password" placeholder="Nouveau mot de passe (6 caractères au moins)" aria-label="Nouveau mot de passe" required>
+          <button class="so-btn" type="submit" ${ui.busy ? "disabled" : ""}>Changer le mot de passe</button>
+        </form></details>
+      <details class="so-more" ${ui.delOpen ? "open" : ""}><summary>Supprimer mon compte</summary>
+        <form class="so-stack" data-so-form="delete-me">
+          <p class="so-hint">Ton compte, ton profil, tes stats et tes sauvegardes sont effacés, et tu quittes ton groupe. Impossible de revenir en arrière. Ton pseudo et ce téléphone pourront servir à un nouveau compte.</p>
+          <input class="so-input" id="so-del-pass" type="password" autocomplete="current-password" placeholder="Ton mot de passe, pour confirmer" aria-label="Mot de passe pour confirmer" required>
+          <button class="so-btn so-danger" type="submit" ${ui.busy ? "disabled" : ""}>Supprimer définitivement mon compte</button>
+        </form></details>
       <button class="so-btn so-big" data-so="logout">Se déconnecter</button>`;
+  } else if (ui.tab === "stats") {
+    body = err + statsHtml(ui.stats);
   } else if (ui.tab === "saves") {
-    body = err + savesList(ui.saves, account.uid, true);
+    body = err + ok + savesList(ui.saves, account.uid, true);
   } else if (ui.tab === "admin") {
-    if (ui.admUser) {
-      body = `<button class="so-link" data-so="adm-back">← Tous les comptes</button>
-        <div class="so-label">Sauvegardes de ${esc(ui.admUser.pseudo)}</div>${err}${savesList(ui.admSaves, ui.admUser.uid, false)}`;
-    } else {
-      const list = ui.adm;
-      body = `${err}${!list ? `<p class="so-hint">Chargement…</p>` : `
-        <p class="so-hint">${list.length} compte${list.length > 1 ? "s" : ""} créé${list.length > 1 ? "s" : ""} depuis le début, ${list.filter(a => a.deletedAt).length} supprimé${list.filter(a => a.deletedAt).length > 1 ? "s" : ""}.</p>
-        <input class="so-input" id="so-filter" type="search" placeholder="Chercher un pseudo" aria-label="Chercher un pseudo" autocomplete="off">
-        <ul class="so-accts">${list.map(a => `<li data-p="${esc(a.pseudo.toLowerCase())}" class="${a.deletedAt ? "so-gone" : ""}">
-          <div class="so-acct-main"><b>${esc(a.pseudo)}</b>${a.admin ? ` <span class="so-tag so-admin">Admin</span>` : ""}${a.deletedAt ? ` <span class="so-tag">Supprimé le ${when(a.deletedAt)}</span>` : ""}${a.locked ? ` <span class="so-tag">Bloqué</span>` : ""}
-            <small>Créé le ${when(a.createdAt)} · dernière connexion ${when(a.lastLoginAt)}</small></div>
-          <div class="so-acct-acts">
-            <button class="so-btn so-sm" data-so="adm-saves" data-uid="${esc(a.uid)}" data-p="${esc(a.pseudo)}">Sauvegardes</button>
-            ${a.deletedAt ? "" : `<button class="so-btn so-sm" data-so="adm-reset" data-p="${esc(a.pseudo)}">Mot de passe</button>
-            ${a.admin ? "" : `<button class="so-btn so-sm so-danger" data-so="adm-del" data-p="${esc(a.pseudo)}">Supprimer</button>`}`}
-          </div></li>`).join("")}</ul>`}`;
-    }
+    body = `<div class="so-seg so-subtabs" role="group" aria-label="Admin">${[["comptes", "Comptes"], ["live", "En direct"], ["firebase", "Firebase"]].map(([id, l]) =>
+      `<button type="button" data-so="adm-tab" data-t="${id}" aria-pressed="${ui.admTab === id}">${l}</button>`).join("")}</div>${err}${ok}` + adminHtml();
   }
   return `<div class="so-tabs" role="tablist">${tabs.map(([id, label]) => `<button role="tab" data-so="tab" data-t="${id}" aria-selected="${ui.tab === id}">${label}</button>`).join("")}</div>
     <div class="so-stack">${body}</div>`;
 }
 
+function adminHtml() {
+  if (ui.admTab === "comptes") {
+    if (ui.admUser) return `<button class="so-link" data-so="adm-back">← Tous les comptes</button>
+      <div class="so-label">Sauvegardes de ${esc(ui.admUser.pseudo)}</div>${savesList(ui.admSaves, ui.admUser.uid, false)}`;
+    const list = ui.adm;
+    if (!list) return `<p class="so-hint">Chargement…</p>`;
+    const gone = list.filter(a => a.deletedAt).length;
+    return `<p class="so-hint">${list.length} compte${list.length > 1 ? "s" : ""} créé${list.length > 1 ? "s" : ""} depuis le début, ${gone} supprimé${gone > 1 ? "s" : ""}, ${list.filter(a => a.banned && !a.deletedAt).length} suspendu(s).</p>
+      <input class="so-input" id="so-filter" type="search" placeholder="Chercher un pseudo" aria-label="Chercher un pseudo" autocomplete="off">
+      <ul class="so-accts">${list.map(a => `<li data-p="${esc(a.pseudo.toLowerCase())}" class="${a.deletedAt ? "so-gone" : ""}">
+        <div class="so-acct-main"><b>${esc(a.pseudo)}</b>${a.admin ? ` <span class="so-tag so-admin">Admin</span>` : ""}${a.deletedAt ? ` <span class="so-tag">Supprimé le ${when(a.deletedAt)}${a.deletedBy === "self" ? " (par lui-même)" : ""}</span>` : ""}${a.banned && !a.deletedAt ? ` <span class="so-tag so-ban">Suspendu</span>` : ""}${a.locked ? ` <span class="so-tag">Bloqué 15 min</span>` : ""}
+          <small>Créé le ${when(a.createdAt)} · dernière connexion ${when(a.lastLoginAt)}</small></div>
+        <div class="so-acct-acts">
+          <button class="so-btn so-sm" data-so="adm-saves" data-uid="${esc(a.uid)}" data-p="${esc(a.pseudo)}">Sauvegardes</button>
+          ${a.deletedAt || a.admin ? "" : `<button class="so-btn so-sm" data-so="adm-reset" data-p="${esc(a.pseudo)}">Mot de passe</button>
+          <button class="so-btn so-sm" data-so="${a.banned ? "adm-unban" : "adm-ban"}" data-p="${esc(a.pseudo)}">${a.banned ? "Réactiver" : "Suspendre"}</button>
+          <button class="so-btn so-sm so-danger" data-so="adm-del" data-p="${esc(a.pseudo)}">Supprimer</button>`}
+        </div></li>`).join("")}</ul>`;
+  }
+  if (ui.admTab === "live") {
+    const L = ui.live;
+    if (!L) return `<p class="so-hint">Chargement…</p>`;
+    const rooms = L.rooms, groups = L.groups;
+    return `<div class="so-label">Parties (${rooms.length})</div>
+      ${rooms.length ? `<ul class="so-accts">${rooms.map(r => `<li class="${r.fresh ? "" : "so-gone"}"><div class="so-acct-main"><b>${esc(GAMES[r.game])} · ${esc(r.code)}</b> <span class="so-tag">${esc(r.phase || "?")}</span>${r.fresh ? ` <span class="so-tag so-pub">En cours</span>` : ""}
+          <small>${r.players == null ? "" : `${r.players} joueur${r.players > 1 ? "s" : ""} · `}dernière action ${ago(r.touched)}</small></div>
+          <div class="so-acct-acts">${NO_TV.has(r.game) ? "" : `<a class="so-btn so-sm" href="${new URL(`${r.game}/#${r.code}-tv`, ROOT).href}" target="_blank" rel="noopener">Regarder</a>`}
+          <button class="so-btn so-sm so-danger" data-so="adm-room-del" data-g="${esc(r.game)}" data-code="${esc(r.code)}">Fermer</button></div></li>`).join("")}</ul>` : `<p class="so-hint">Aucune partie.</p>`}
+      <div class="so-label">Groupes (${groups.length})</div>
+      ${groups.length ? `<ul class="so-accts">${groups.map(g => `<li><div class="so-acct-main"><b>${esc(g.code)}</b> · chef ${esc(g.hostPseudo || "?")}${g.current && GAMES[g.current.game] ? ` <span class="so-tag">${esc(GAMES[g.current.game])}</span>` : ""}
+          <small>${g.members.length} membre${g.members.length > 1 ? "s" : ""}, ${g.members.filter(online).length} en ligne · ${esc(g.members.map(m => m.pseudo).join(", "))}</small></div>
+          <div class="so-acct-acts"><button class="so-btn so-sm so-danger" data-so="adm-group-del" data-code="${esc(g.code)}">Dissoudre</button></div></li>`).join("")}</ul>` : `<p class="so-hint">Aucun groupe.</p>`}
+      <button class="so-btn" data-so="adm-tab" data-t="live">Actualiser</button>`;
+  }
+  // Firebase usage against the free plan
+  const U = ui.usage, C = ui.counts;
+  const bar = (label, n, max) => `<div class="so-usage"><div><b>${label}</b><span>${n.toLocaleString("fr-FR")} / ${max.toLocaleString("fr-FR")}</span></div>
+    <div class="so-meter" role="meter" aria-valuemin="0" aria-valuemax="${max}" aria-valuenow="${n}" aria-label="${label}"><i style="width:${Math.min(100, 100 * n / max).toFixed(1)}%" class="${n / max > 0.8 ? "hot" : ""}"></i></div></div>`;
+  return `${U === null ? `<p class="so-hint">Chargement…</p>` : U.error ? `<p class="so-err">${esc(U.error)}</p>` : `
+      <p class="so-hint">Aujourd'hui (depuis minuit, heure de Californie, quand Firebase remet les compteurs à zéro). Forfait gratuit Spark.</p>
+      ${bar("Lectures", U.reads, U.limits.reads)}${bar("Écritures", U.writes, U.limits.writes)}${bar("Suppressions", U.deletes, U.limits.deletes)}`}
+    ${C ? `<div class="so-total"><div><b>${C.accounts}</b><small>comptes</small></div><div><b>${C.saves ?? "?"}</b><small>sauvegardes</small></div><div><b>${C.rooms}</b><small>parties</small></div><div><b>${C.groups}</b><small>groupes</small></div></div>` : ""}
+    <p class="so-hint">Stockage : 1 Go gratuit. Les sauvegardes sont compressées et font quelques Ko chacune.</p>
+    <button class="so-btn" data-so="adm-tab" data-t="firebase">Actualiser</button>`;
+}
+
 function drawAccount() {
   if (!dlg) return;
+  const open = [...dlg.querySelectorAll("details[open] summary")].map(s => s.textContent);
   dlg.querySelector(".so-body").innerHTML = accountHtml();
+  dlg.querySelectorAll("details summary").forEach(s => { if (open.includes(s.textContent)) s.parentElement.open = true; });
   if (!account) setTimeout(() => dlg.querySelector("#so-pseudo")?.focus(), 0);
 }
 
@@ -189,21 +303,66 @@ async function deleteSave(uid, id) {
   b.delete(ref("profiles", uid, "saves", id));
   await b.commit();
 }
+// On a phone, the share sheet (WhatsApp…); on a computer, copy the link.
+async function shareLink(link, title) {
+  const phone = matchMedia("(pointer: coarse)").matches;
+  try { if (phone && navigator.share) { await navigator.share({ title: "Ce soir on joue", text: title, url: link }); return "Lien partagé."; } }
+  catch (err) { if (err?.name === "AbortError") return ""; }
+  try { await navigator.clipboard.writeText(link); return "Lien copié : colle-le dans le groupe."; } catch { return link; }
+}
+
+// Admin: rooms of every game and every group, straight from Firestore (the admin may read everything).
+async function loadLive() {
+  const rooms = [];
+  await Promise.all(Object.entries(ROOM_COLS).map(async ([game, col]) => {
+    for (const d of (await Fs.getDocs(Fs.collection(fs, col))).docs) {
+      const x = d.data(), touched = tsMs(x.touchedAt) || tsMs(x.roundAt) || tsMs(x.createdAt) || 0;
+      rooms.push({ game, code: d.id, phase: x.phase, touched, fresh: Date.now() - touched < 6 * 3600 * 1000, players: null });
+    }
+  }));
+  rooms.sort((a, b) => b.touched - a.touched);
+  await Promise.all(rooms.filter(r => r.fresh).map(async r => {
+    try { r.players = (await Fs.getCountFromServer(Fs.collection(fs, ROOM_COLS[r.game], r.code, "players"))).data().count; } catch {}
+  }));
+  const groups = await Promise.all((await Fs.getDocs(Fs.collection(fs, "parties"))).docs.map(async d => ({
+    code: d.id, ...d.data(),
+    members: (await Fs.getDocs(Fs.collection(fs, "parties", d.id, "members"))).docs.map(m => ({ uid: m.id, ...m.data({ serverTimestamps: "estimate" }) }))
+  })));
+  return { rooms, groups };
+}
+async function loadCounts() {
+  const count = async q => { try { return (await Fs.getCountFromServer(q)).data().count; } catch { return null; } };
+  const [saves, groups, ...rooms] = await Promise.all([count(Fs.collectionGroup(fs, "saves")), count(Fs.collection(fs, "parties")),
+    ...Object.values(ROOM_COLS).map(c => count(Fs.collection(fs, c)))]);
+  return { accounts: ui.adm ? ui.adm.filter(a => !a.deletedAt).length : "?", saves, groups: groups ?? "?", rooms: rooms.reduce((a, n) => a + (n || 0), 0) };
+}
 
 async function openTab(t) {
-  ui.tab = t; ui.err = ""; drawAccount();
+  ui.tab = t; ui.err = ""; ui.ok = ""; drawAccount();
   try {
     if (t === "saves") { ui.saves = null; drawAccount(); ui.saves = await loadSaves(account.uid); }
-    if (t === "admin" && !ui.admUser) { ui.adm = null; drawAccount(); ui.adm = (await adminApi({ action: "list" })).accounts; }
+    if (t === "stats") { ui.stats = null; drawAccount(); ui.stats = await loadStats(account.uid); }
+    if (t === "admin") await openAdminTab(ui.admTab);
   } catch (e) { ui.err = e.message || "Chargement impossible."; }
   drawAccount();
+}
+async function openAdminTab(t) {
+  ui.admTab = t; ui.err = ""; drawAccount();
+  if (t === "comptes" && !ui.admUser) { ui.adm = null; drawAccount(); ui.adm = (await adminApi({ action: "list" })).accounts; }
+  if (t === "live") { ui.live = null; drawAccount(); ui.live = await loadLive(); }
+  if (t === "firebase") {
+    ui.usage = null; drawAccount();
+    if (!ui.adm) ui.adm = (await adminApi({ action: "list" }).catch(() => ({ accounts: null }))).accounts;
+    const [u, c] = await Promise.all([adminApi({ action: "usage" }).then(r => r.usage, e => ({ error: e.message })), loadCounts()]);
+    ui.usage = u; ui.counts = c;
+  }
 }
 
 // After signing in or out inside a game, the page reloads so the game picks up the new identity.
 async function afterAuthChange() {
   await loadAccount();
   if (GAME) { location.reload(); return; }
-  ui.tab = "profil"; drawAccount(); drawHubButton(); drawParty(); watchParty();
+  ui.tab = "profil"; ui.delOpen = false; drawAccount(); drawHubButton(); watchParty(); drawParty();
 }
 
 async function onAccountClick(e) {
@@ -211,6 +370,7 @@ async function onAccountClick(e) {
   if (e.target === dlg || b?.dataset.so === "close") { dlg.close(); return; }
   if (!b) return;
   const d = b.dataset;
+  ui.ok = "";
   try {
     switch (d.so) {
       case "mode": ui.mode = d.m; ui.err = ""; drawAccount(); break;
@@ -228,12 +388,21 @@ async function onAccountClick(e) {
         if (party?.code) await Fs.updateDoc(ref("parties", party.code, "members", account.uid), { color: d.c }).catch(() => {});
         drawParty();
         break;
+      case "share": case "unshare": {
+        const pub = d.so === "share";
+        await Fs.updateDoc(ref("profiles", account.uid, "saves", d.id), { public: pub });
+        ui.saves = ui.saves.map(s => s.id === d.id ? { ...s, public: pub } : s);
+        ui.ok = pub ? await shareLink(d.link, "Revois notre partie sur Ce soir on joue :") : "Ce lien ne marche plus.";
+        drawAccount();
+        break;
+      }
       case "save-del":
         if (!confirm("Supprimer cette sauvegarde ? Elle ne pourra pas être récupérée.")) break;
         await deleteSave(d.uid, d.id);
         if (ui.admUser) ui.admSaves = ui.admSaves.filter(s => s.id !== d.id); else ui.saves = ui.saves.filter(s => s.id !== d.id);
         drawAccount();
         break;
+      case "adm-tab": await openAdminTab(d.t); drawAccount(); break;
       case "adm-saves":
         ui.admUser = { uid: d.uid, pseudo: d.p }; ui.admSaves = null; ui.err = ""; drawAccount();
         ui.admSaves = await loadSaves(d.uid); drawAccount();
@@ -243,7 +412,14 @@ async function onAccountClick(e) {
         const pass = prompt(`Nouveau mot de passe pour ${d.p} (6 caractères au moins) :`);
         if (!pass) break;
         await adminApi({ action: "reset", pseudo: d.p, password: pass });
-        alert(`Mot de passe de ${d.p} changé.`);
+        ui.ok = `Mot de passe de ${d.p} changé.`; drawAccount();
+        break;
+      }
+      case "adm-ban": case "adm-unban": {
+        const ban = d.so === "adm-ban";
+        if (ban && !confirm(`Suspendre ${d.p} ? Il ne pourra plus se connecter, et sa session en cours s'arrête dans l'heure. Rien n'est effacé : tu pourras le réactiver.`)) break;
+        await adminApi({ action: ban ? "ban" : "unban", pseudo: d.p });
+        ui.adm = (await adminApi({ action: "list" })).accounts; ui.ok = ban ? `${d.p} est suspendu.` : `${d.p} est réactivé.`; drawAccount();
         break;
       }
       case "adm-del":
@@ -251,16 +427,56 @@ async function onAccountClick(e) {
         await adminApi({ action: "delete", pseudo: d.p });
         ui.adm = (await adminApi({ action: "list" })).accounts; drawAccount();
         break;
+      case "adm-room-del":
+        if (!confirm(`Fermer la partie ${GAMES[d.g]} ${d.code} ? Les joueurs dedans seront renvoyés à l'accueil du jeu.`)) break;
+        await Fs.deleteDoc(ref(ROOM_COLS[d.g], d.code));
+        ui.live.rooms = ui.live.rooms.filter(r => !(r.game === d.g && r.code === d.code)); drawAccount();
+        break;
+      case "adm-group-del": {
+        if (!confirm(`Dissoudre le groupe ${d.code} ?`)) break;
+        const members = await Fs.getDocs(Fs.collection(fs, "parties", d.code, "members"));
+        const bt = Fs.writeBatch(fs);
+        members.docs.forEach(m => bt.delete(m.ref));
+        bt.delete(ref("parties", d.code));
+        await bt.commit();
+        ui.live.groups = ui.live.groups.filter(g => g.code !== d.code); drawAccount();
+        break;
+      }
     }
-  } catch (err) { ui.err = err.code ? "Action refusée (" + err.code + ")." : err.message || "Ça n'a pas marché."; drawAccount(); }
+  } catch (err) { ui.err = errText(err); drawAccount(); }
 }
 
 async function onAccountSubmit(e) {
   e.preventDefault();
   if (ui.busy) return;
+  const form = e.target.dataset.soForm;
+  ui.err = ""; ui.ok = "";
+  if (form === "password") {
+    const cur = dlg.querySelector("#so-cur").value, next = dlg.querySelector("#so-new").value;
+    ui.busy = true; drawAccount();
+    try { await meApi({ action: "password", password: cur, newPassword: next }); ui.ok = "Mot de passe changé."; }
+    catch (err) { ui.err = errText(err); }
+    ui.busy = false; drawAccount();
+    return;
+  }
+  if (form === "delete-me") {
+    const pass = dlg.querySelector("#so-del-pass").value;
+    if (!confirm("Supprimer ton compte pour de bon ? Tes stats et tes sauvegardes seront effacées.")) return;
+    ui.busy = true; ui.delOpen = true; drawAccount();
+    try {
+      await meApi({ action: "delete", password: pass });
+      stopParty();
+      await A.signOut(auth);
+      ui.busy = false; ui.delOpen = false;
+      await afterAuthChange();
+      ui.ok = "Ton compte a été supprimé."; drawAccount();
+    } catch (err) { ui.busy = false; ui.err = errText(err); drawAccount(); }
+    return;
+  }
+  // sign in / sign up
   const name = dlg.querySelector("#so-pseudo").value.trim(), password = dlg.querySelector("#so-pass").value;
   if (!name || !password) { ui.err = "Entre ton pseudo et ton mot de passe."; drawAccount(); return; }
-  ui.busy = true; ui.err = ""; drawAccount();
+  ui.busy = true; drawAccount();
   try {
     await firebase();
     const data = await api(ui.mode, { pseudo: name, password, device: deviceId() });
@@ -293,7 +509,7 @@ export async function openAccount(tab) {
     });
     document.body.appendChild(dlg);
   }
-  ui.err = "";
+  ui.err = ""; ui.ok = "";
   drawAccount();
   dlg.showModal();
   if (account && tab) openTab(tab);
@@ -301,31 +517,44 @@ export async function openAccount(tab) {
 
 /* ---------- groups ("parties") ----------
    parties/{code}: { hostUid, hostPseudo, createdAt, current: { game, room, at } | null }
-   parties/{code}/members/{uid}: { pseudo, color, joinedAt }
-   When the host enters a room in a game, `current` changes and every member's page follows. */
+   parties/{code}/members/{uid}: { pseudo, color, joinedAt, seen (server time), where (game or "accueil") }
+   Every open page says "I'm here" every 45 s. When the host enters a room in a game, `current` changes and
+   every member's page follows. The host can pass the role on; when the host has left or been away 10 minutes,
+   any member can take it. A group nobody visits for 3 days is closed by the server (netlify/functions/menage.mjs). */
 let party = null;   // { code, data, members, unsubs }
-let currentRoom = "";
+let currentRoom = "", beatT = null;
 const followKey = code => "soiree-suivi-" + code;
+const online = m => Date.now() - tsMs(m.seen) < ONLINE_MS;
+const placeOf = m => !m.where || m.where === "accueil" ? "sur l'accueil" : GAMES[m.where] ? "dans " + GAMES[m.where] : "";
 
-function stopParty() { party?.unsubs.forEach(u => u()); party = null; }
+function stopParty() { party?.unsubs.forEach(u => u()); party = null; clearInterval(beatT); beatT = null; }
+function beat() {
+  if (!party?.code || !account || document.visibilityState !== "visible") return;
+  Fs.updateDoc(ref("parties", party.code, "members", account.uid), { seen: Fs.serverTimestamp(), where: GAME || "accueil" }).catch(() => {});
+}
+document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") beat(); });
+
 function watchParty() {
   const code = account?.party;
   if (party?.code === code) return;
   stopParty();
   if (!code) { drawParty(); return; }
-  party = { code, data: null, members: [], unsubs: [] };
+  party = { code, data: null, members: [], unsubs: [], ranking: null };
   party.unsubs.push(Fs.onSnapshot(ref("parties", code), s => {
     if (!s.exists()) { leftParty(); return; }
     party.data = s.data();
     announce();  // the host may have opened a room before the group had loaded
+    if (isHost()) markFollowed();  // a leader who later hands the role on must not be sent into their own room
     follow();
     drawParty();
   }, () => leftParty()));
   party.unsubs.push(Fs.onSnapshot(Fs.collection(fs, "parties", code, "members"), q => {
-    party.members = q.docs.map(d => ({ uid: d.id, ...d.data() })).sort((a, b) => (a.joinedAt || 0) - (b.joinedAt || 0));
+    party.members = q.docs.map(d => ({ uid: d.id, ...d.data({ serverTimestamps: "estimate" }) })).sort((a, b) => (a.joinedAt || 0) - (b.joinedAt || 0));
     if (party.data && !party.members.some(m => m.uid === account.uid)) { leftParty(); return; }  // removed by the host
     drawParty();
   }, () => {}));
+  beat();
+  beatT = setInterval(() => { beat(); drawParty(); }, BEAT_MS);
 }
 async function leftParty() {
   stopParty();
@@ -333,6 +562,8 @@ async function leftParty() {
   drawParty();
 }
 const isHost = () => !!party?.data && party.data.hostUid === account?.uid;
+const hostMember = () => party?.members.find(m => m.uid === party.data?.hostUid);
+const hostAway = () => { const h = hostMember(); return !h || Date.now() - tsMs(h.seen) > HOST_AWAY_MS; };
 
 function gameUrl(game, room) { return new URL(`${game}/#${room}`, ROOT).href; }
 function goTo(game, room) {
@@ -342,10 +573,12 @@ function goTo(game, room) {
   if (samePage) location.reload();  // only the #hash changed: reload so the game opens that room
 }
 // A member's page follows the host into the room the host just entered (once per change).
+const currentKey = () => { const c = party?.data?.current; return c ? `${c.game}:${c.room}:${c.at}` : ""; };
+function markFollowed() { if (currentKey()) local.set(followKey(party.code), currentKey()); }
 function follow() {
   const c = party?.data?.current;
   if (!c || !GAMES[c.game] || isHost()) return;
-  const key = `${c.game}:${c.room}:${c.at}`;
+  const key = currentKey();
   if (local.get(followKey(party.code)) === key) return;
   local.set(followKey(party.code), key);
   if (GAME === c.game && currentRoom === c.room) return;
@@ -363,6 +596,7 @@ function announce() {
   const c = party.data.current;
   if (c && c.game === GAME && c.room === currentRoom) return;
   party.data.current = { game: GAME, room: currentRoom, at: Date.now() };
+  markFollowed();
   Fs.updateDoc(ref("parties", party.code), { current: party.data.current }).catch(() => {});
 }
 // The room a member was sent to by the group, to join without asking.
@@ -386,13 +620,20 @@ async function joinParty(code) {
   const s = await Fs.getDoc(ref("parties", code));
   if (!s.exists()) throw new Error(`Aucun groupe avec le code ${code}.`);
   if (party?.code && party.code !== code) await leaveParty();
-  await Fs.setDoc(ref("parties", code, "members", account.uid), { pseudo: account.pseudo, color: account.color, joinedAt: Date.now() });
+  await Fs.setDoc(ref("parties", code, "members", account.uid), { pseudo: account.pseudo, color: account.color, joinedAt: Date.now(), seen: Fs.serverTimestamp(), where: GAME || "accueil" });
   account.party = code;
   await saveProfile({ party: code });
   watchParty();
 }
+async function setHost(m) { await Fs.updateDoc(ref("parties", party.code), { hostUid: m.uid, hostPseudo: m.pseudo }); }
+// Leaving: a host first hands the group to someone (online first, then the longest-standing member).
 async function leaveParty() {
   const code = party?.code || account.party;
+  if (code && isHost()) {
+    const next = party.members.filter(m => m.uid !== account.uid).sort((a, b) => online(b) - online(a) || (a.joinedAt || 0) - (b.joinedAt || 0))[0];
+    if (!next) { await dissolveParty(); return; }
+    await setHost(next);
+  }
   if (code) await Fs.deleteDoc(ref("parties", code, "members", account.uid)).catch(() => {});
   await leftParty();
 }
@@ -404,6 +645,15 @@ async function dissolveParty() {
   b.delete(ref("parties", code));
   await b.commit();
   await leftParty();
+}
+// Group ranking: everyone's stats, all games together.
+async function loadRanking() {
+  const rows = await Promise.all(party.members.map(async m => {
+    const st = await loadStats(m.uid).catch(() => []);
+    const best = st.filter(s => s.games).sort((a, b) => b.wins - a.wins || b.games - a.games)[0];
+    return { ...m, games: st.reduce((a, s) => a + s.games, 0), wins: st.reduce((a, s) => a + s.wins, 0), best: best ? GAMES[best.game] : "" };
+  }));
+  return rows.sort((a, b) => b.wins - a.wins || (b.games ? b.wins / b.games : 0) - (a.games ? a.wins / a.games : 0) || b.games - a.games);
 }
 
 /* ---------- home page ---------- */
@@ -428,15 +678,22 @@ function drawParty() {
       <button class="so-btn ${invitedTo ? "" : "so-primary"} so-big" data-so="party-create">Créer un groupe</button>
       <form class="so-row" data-so-form="party-join"><input class="so-input so-code" id="so-party-code" maxlength="4" autocomplete="off" autocapitalize="characters" placeholder="CODE" aria-label="Code du groupe" value="${esc(invitedTo)}"><button class="so-btn" type="submit">Rejoindre</button></form>`;
   } else {
-    const host = isHost(), c = party.data.current;
+    const host = isHost(), c = party.data.current, on = party.members.filter(online).length;
     h += `<div class="so-party-head"><div><small>Code du groupe</small><div class="so-pcode">${esc(party.code)}</div></div>
         <button class="so-btn so-sm" data-so="party-invite">Inviter</button></div>
       ${c && GAMES[c.game] ? `<div class="so-now"><span>${host ? "Ton groupe joue à" : "Le groupe joue à"} <b>${esc(GAMES[c.game])}</b> · partie ${esc(c.room)}</span>
         <button class="so-btn so-sm so-primary" data-so="party-go">Rejoindre</button></div>` : ""}
-      <ul class="so-members">${party.members.map(m => `<li>${avatar(m.color || COLORS[0], m.pseudo)}<span>${esc(m.pseudo)}</span>${m.uid === party.data.hostUid ? `<span class="so-tag">Chef</span>` : ""}
-        ${host && m.uid !== account.uid ? `<button class="so-x so-xs" data-so="party-kick" data-uid="${esc(m.uid)}" aria-label="Retirer ${esc(m.pseudo)}">×</button>` : ""}</li>`).join("")}</ul>
-      <p class="so-hint">${host ? "Choisis un jeu ci-dessous et crée la partie : tout le groupe arrivera dans ton salon." : `Quand ${esc(party.data.hostPseudo || "le chef")} lance un jeu, tu arrives directement dans sa partie.`}</p>${err}
-      ${host ? `<button class="so-btn so-ghost" data-so="party-dissolve">Dissoudre le groupe</button>` : `<button class="so-btn so-ghost" data-so="party-leave">Quitter le groupe</button>`}`;
+      <p class="so-hint"><b>${on}</b> sur ${party.members.length} en ligne</p>
+      <ul class="so-members">${party.members.map(m => `<li class="${online(m) ? "so-on" : ""}" title="${online(m) ? "En ligne " + esc(placeOf(m)) : "Vu " + esc(ago(tsMs(m.seen)))}">
+        <span class="so-dot" aria-hidden="true"></span>${avatar(m.color || COLORS[0], m.pseudo)}<span class="so-mname">${esc(m.pseudo)}<small>${online(m) ? esc(placeOf(m)) : "vu " + esc(ago(tsMs(m.seen)))}</small></span>
+        ${m.uid === party.data.hostUid ? `<span class="so-tag">Chef</span>` : ""}
+        ${host && m.uid !== account.uid ? `<button class="so-x so-xs" data-so="party-host" data-uid="${esc(m.uid)}" aria-label="Faire de ${esc(m.pseudo)} le chef" title="Le faire chef">👑</button><button class="so-x so-xs" data-so="party-kick" data-uid="${esc(m.uid)}" aria-label="Retirer ${esc(m.pseudo)}">×</button>` : ""}</li>`).join("")}</ul>
+      ${!host && hostAway() ? `<div class="so-now"><span>${hostMember() ? `${esc(party.data.hostPseudo || "Le chef")} n'est plus là depuis un moment.` : "Le chef a quitté le groupe."}</span><button class="so-btn so-sm so-primary" data-so="party-claim">Devenir chef</button></div>` : ""}
+      <p class="so-hint">${host ? "Choisis un jeu ci-dessous et crée la partie : tout le groupe arrivera dans ton salon. 👑 passe ton rôle de chef à quelqu'un." : `Quand ${esc(party.data.hostPseudo || "le chef")} lance un jeu, tu arrives directement dans sa partie.`}</p>${err}
+      <details class="so-more" data-so-rank ${party.rankOpen ? "open" : ""}><summary>Classement du groupe</summary>${party.ranking ? `<ol class="so-rank">${party.ranking.map((m, i) => `<li><span class="so-pos">${i + 1}</span>${avatar(m.color || COLORS[0], m.pseudo)}<span class="so-mname">${esc(m.pseudo)}<small>${m.games ? `${m.games} partie${m.games > 1 ? "s" : ""}${m.best ? " · meilleur jeu : " + esc(m.best) : ""}` : "pas encore de partie"}</small></span><b>${m.wins} 🏆</b></li>`).join("")}</ol>` : `<p class="so-hint">Chargement…</p>`}
+        <p class="so-hint">Victoires dans tous les jeux, avec les stats gardées dans les comptes.</p></details>
+      <button class="so-btn so-ghost" data-so="party-leave">${host && party.members.length > 1 ? "Quitter le groupe (le rôle de chef passe à quelqu'un)" : host ? "Dissoudre le groupe" : "Quitter le groupe"}</button>
+      ${host && party.members.length > 1 ? `<button class="so-link" data-so="party-dissolve">Dissoudre le groupe pour tout le monde</button>` : ""}`;
   }
   partyEl.innerHTML = h;
 }
@@ -449,18 +706,23 @@ async function onPartyClick(e) {
       case "open": openAccount(); break;
       case "party-create": await createParty(); break;
       case "party-join-invite": await joinParty(invitedTo); invitedTo = ""; break;
-      case "party-leave": if (confirm("Quitter le groupe ?")) await leaveParty(); break;
+      case "party-leave": if (confirm(isHost() && party.members.length <= 1 ? "Dissoudre le groupe ?" : "Quitter le groupe ?")) await leaveParty(); break;
       case "party-dissolve": if (confirm("Dissoudre le groupe ? Tout le monde en sera retiré.")) await dissolveParty(); break;
       case "party-kick": await Fs.deleteDoc(ref("parties", party.code, "members", b.dataset.uid)); break;
+      case "party-host": {
+        const m = party.members.find(x => x.uid === b.dataset.uid);
+        if (m && confirm(`Faire de ${m.pseudo} le chef du groupe ?`)) await setHost(m);
+        break;
+      }
+      case "party-claim": await setHost({ uid: account.uid, pseudo: account.pseudo }); break;
       case "party-go": { const c = party.data.current; goTo(c.game, c.room); break; }
       case "party-invite": {
-        const url = new URL("#groupe=" + party.code, ROOT).href, text = `Rejoins mon groupe sur Ce soir on joue (code ${party.code}) :`;
-        try { if (navigator.share) { await navigator.share({ title: "Ce soir on joue", text, url }); break; } } catch (err) { if (err?.name === "AbortError") break; }
-        await navigator.clipboard?.writeText(url); partyErr = ""; b.textContent = "Lien copié";
+        const msg = await shareLink(new URL("#groupe=" + party.code, ROOT).href, `Rejoins mon groupe sur Ce soir on joue (code ${party.code}) :`);
+        if (msg) b.textContent = msg.startsWith("Lien") ? "Lien copié" : "Inviter";
         return;
       }
     }
-  } catch (err) { partyErr = err.code ? "Action refusée (" + err.code + ")." : err.message || "Ça n'a pas marché."; }
+  } catch (err) { partyErr = errText(err); }
   drawParty();
 }
 
@@ -471,6 +733,11 @@ export async function mountHub() {
   if (m) invitedTo = m[1].toUpperCase();
   document.getElementById("acct")?.addEventListener("click", () => openAccount());
   partyEl?.addEventListener("click", onPartyClick);
+  partyEl?.addEventListener("toggle", async e => {
+    if (!e.target.matches("[data-so-rank]") || !party) return;
+    party.rankOpen = e.target.open;
+    if (e.target.open && !party.ranking) { party.ranking = await loadRanking().catch(() => []); drawParty(); }
+  }, true);
   partyEl?.addEventListener("submit", async e => {
     e.preventDefault(); partyErr = "";
     try { await joinParty(partyEl.querySelector("#so-party-code").value); invitedTo = ""; } catch (err) { partyErr = err.message; }
@@ -517,67 +784,26 @@ function decorate(M) {
   app?.querySelectorAll('[data-act="rename-open"]').forEach(b => { b.hidden = true; });
 }
 
-/* ---------- recording what this phone saw ----------
-   After each render the game's state (M) is compared with the previous one; changed keys become a frame.
-   A recording covers one game: it restarts when the room or the room's gameId changes. */
-const SKIP = new Set(["drafts", "flash", "err", "busy", "installEvt", "local", "fatal", "offline", "offlineSince", "mode", "tv", "savedDirs", "handover", "renaming", "showQR"]);
-const PHOTO = "data:image/svg+xml," + encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 300"><rect width="400" height="300" fill="#ddd"/><text x="200" y="158" font-family="sans-serif" font-size="22" text-anchor="middle" fill="#666">Photo non gardée</text></svg>`);
-let rec = null, recT = null, lastM = null;
-
-function clean(v, depth = 0) {
-  if (v === null || typeof v === "number" || typeof v === "boolean") return v;
-  if (typeof v === "string") return v.length > 20000 || (v.startsWith("data:") && v.length > 2000) ? PHOTO : v;
-  if (typeof v !== "object" || depth > 12) return undefined;
-  if (typeof v.toMillis === "function") return { __ts: v.toMillis() };
-  if (Array.isArray(v)) return v.map(x => { const c = clean(x, depth + 1); return c === undefined ? null : c; });
-  if (v instanceof Set) return { __set: [...v].map(x => clean(x, depth + 1)) };
-  if (v instanceof Map) return { __map: [...v].map(([k, x]) => [k, clean(x, depth + 1)]) };
-  const proto = Object.getPrototypeOf(v);
-  if (proto !== Object.prototype && proto !== null) return undefined;
-  const o = {};
-  for (const k of Object.keys(v)) { const c = clean(v[k], depth + 1); if (c !== undefined) o[k] = c; }
-  return o;
-}
-function ts(ms) { return { seconds: Math.floor(ms / 1000), nanoseconds: (ms % 1000) * 1e6, toMillis: () => ms, toDate: () => new Date(ms), valueOf: () => ms, isEqual: o => o?.toMillis?.() === ms }; }
-function revive(v) {
-  if (Array.isArray(v)) return v.map(revive);
-  if (!v || typeof v !== "object") return v;
-  if ("__ts" in v) return ts(v.__ts);
-  if ("__set" in v) return new Set(v.__set.map(revive));
-  if ("__map" in v) return new Map(v.__map.map(([k, x]) => [k, revive(x)]));
-  const o = {};
-  for (const k of Object.keys(v)) o[k] = revive(v[k]);
-  return o;
-}
-
-function capture(M) {
-  if (M.mode !== "room" || M.tv || !M.code) return;
-  const gid = M.room?.gameId || "";
-  if (!rec || rec.code !== M.code || rec.gameId !== gid) rec = { game: GAME, code: M.code, gameId: gid, frames: [], last: {}, me: M.me };
-  if (rec.frames.length >= MAX_FRAMES) return;
-  const d = {};
-  for (const k of Object.keys(M)) {
-    if (SKIP.has(k)) continue;
-    const v = clean(M[k]);
-    if (v === undefined) continue;
-    const s = JSON.stringify(v);
-    if (rec.last[k] !== s) { rec.last[k] = s; d[k] = v; }
-  }
-  if (Object.keys(d).length) rec.frames.push({ t: Date.now(), d });
-}
-
+let lastM = null;
 // Called by the game after every render (its render function is wrapped).
 export function frame(M) {
   if (replaying) return;
   lastM = M;
   decorate(M);
-  // At most one capture every 150 ms, and always one: games re-render many times a second during play,
-  // so waiting for a quiet moment would never record anything.
-  if (M.mode === "room" && !M.tv && M.code && !recT) recT = setTimeout(() => { recT = null; capture(lastM); }, 150);
   drawSaveBar(M);
 }
 
-/* ---------- saving ---------- */
+/* ---------- saving: each game tells its game in words (its journal) ----------
+   { players: { id: { nick, color } }, events: [{ head?, text?, board?, tone? }], final: { title, rows: [{ who, text }] } }
+   "@id" in a text is a player. The journal is built from the game's own history when the game is saved. */
+let journalFn = null;
+export function setJournal(fn) { journalFn = fn; }
+function journal() {
+  const j = journalFn?.();
+  if (!j || !j.players || !Array.isArray(j.events)) throw new Error("Ce jeu ne sait pas encore raconter cette partie.");
+  return j;
+}
+
 async function gzipB64(text) {
   if (typeof CompressionStream !== "function") return { enc: "json", data: text };
   const buf = await new Response(new Blob([text]).stream().pipeThrough(new CompressionStream("gzip"))).arrayBuffer();
@@ -591,23 +817,22 @@ async function gunzipB64(enc, data) {
   const bytes = Uint8Array.from(atob(data), c => c.charCodeAt(0));
   return new Response(new Blob([bytes]).stream().pipeThrough(new DecompressionStream("gzip"))).text();
 }
+const lastBoard = events => [...events].reverse().find(e => e.board)?.board || null;
 
 async function saveGame(kind) {
-  const M = lastM;
-  capture(M);
-  if (!rec?.frames.length) throw new Error("Rien à sauvegarder pour l'instant.");
-  const frames = kind === "result"
-    ? [{ t: Date.now(), d: Object.fromEntries(Object.entries(rec.last).map(([k, s]) => [k, JSON.parse(s)])) }]
-    : rec.frames;
-  const { enc, data } = await gzipB64(JSON.stringify({ v: 1, game: GAME, me: rec.me, frames }));
+  const M = lastM, j = journal();
+  const saved = kind === "result"
+    ? { v: 2, game: GAME, me: M.me, players: j.players, events: [], board: lastBoard(j.events), final: j.final }
+    : { v: 2, game: GAME, me: M.me, players: j.players, events: j.events, final: j.final };
+  const { enc, data } = await gzipB64(JSON.stringify(saved));
   if (data.length > MAX_SAVE) throw new Error("Cette partie est trop longue pour être gardée en entier. Garde le résultat.");
   const chunks = [];
   for (let i = 0; i < data.length; i += CHUNK) chunks.push(data.slice(i, i + CHUNK));
   const saveRef = Fs.doc(Fs.collection(fs, "profiles", account.uid, "saves"));
   const b = Fs.writeBatch(fs);
   b.set(saveRef, {
-    kind, game: GAME, at: Date.now(), code: rec.code, enc, chunks: chunks.length, frames: frames.length,
-    players: (M.players || []).map(p => String(p.nick || "").slice(0, 18)).filter(Boolean).slice(0, 20)
+    kind, game: GAME, at: Date.now(), code: M.code || "", enc, chunks: chunks.length, events: saved.events.length, public: false,
+    players: Object.values(j.players).map(p => String(p.nick || "").slice(0, 18)).filter(Boolean).slice(0, 20)
   });
   chunks.forEach((c, i) => b.set(Fs.doc(fs, "profiles", account.uid, "saves", saveRef.id, "chunks", String(i).padStart(3, "0")), { d: c }));
   await b.commit();
@@ -652,9 +877,9 @@ function drawSaveBar(M) {
   </div>`;
 }
 
-/* ---------- replay ---------- */
+/* ---------- replay: the journal, rebuilt move by move ---------- */
 // Called first thing by a game's boot. Returns true when the page is a replay (?revoir=uid.saveId).
-export async function replayBoot(M, render) {
+export async function replayBoot() {
   const q = new URLSearchParams(location.search).get("revoir");
   if (!q) return false;
   replaying = true;
@@ -667,77 +892,103 @@ export async function replayBoot(M, render) {
   };
   msg("Chargement de la partie…");
   try {
-    // Local testing only: ?revoir=local replays a recording put in sessionStorage by window.soireeDev.
-    if (DEV && q === "local") { play(M, render, JSON.parse(sessionStorage.getItem("soiree-dev-replay")), { at: Date.now() }); return true; }
+    // Local testing only: ?revoir=local replays a journal put in sessionStorage (see window.soireeDev).
+    if (DEV && q === "local") { show(app, JSON.parse(sessionStorage.getItem("soiree-dev-replay")), { at: Date.now() }); return true; }
     await firebase();
-    await loadAccount();
-    if (!account) { msg("Connecte-toi pour revoir tes parties.", true); return true; }
+    await loadAccount();   // optional: a shared game opens without an account
     const [uid, id] = q.split(".");
-    const s = await Fs.getDoc(ref("profiles", uid, "saves", id));
+    let s;
+    try { s = await Fs.getDoc(ref("profiles", uid, "saves", id)); }
+    catch (e) {
+      if (e.code === "permission-denied") { msg(account ? "Cette partie n'est pas à toi, et elle n'est pas partagée." : "Cette partie n'est pas partagée. Si elle est à toi, connecte-toi.", !account); return true; }
+      throw e;
+    }
     if (!s.exists()) { msg("Cette sauvegarde n'existe plus."); return true; }
     const meta = s.data();
     const parts = await Fs.getDocs(Fs.query(Fs.collection(fs, "profiles", uid, "saves", id, "chunks"), Fs.orderBy(Fs.documentId())));
-    const rec = JSON.parse(await gunzipB64(meta.enc, parts.docs.map(d => d.data().d).join("")));
-    play(M, render, rec, meta);
+    const saved = JSON.parse(await gunzipB64(meta.enc, parts.docs.map(d => d.data().d).join("")));
+    if (saved.v !== 2) { msg("Cette sauvegarde vient de l'ancienne version des replays et ne peut plus être revue."); return true; }
+    show(app, saved, meta);
   } catch (e) {
-    msg(e.code === "permission-denied" ? "Cette sauvegarde n'est pas à toi." : "Impossible d'ouvrir cette sauvegarde.");
+    console.error(e);
+    msg("Impossible d'ouvrir cette sauvegarde.");
   }
   return true;
 }
 
-function play(M, render, saved, meta) {
-  const frames = saved.frames.map(f => ({ t: f.t, d: revive(f.d) }));
-  const states = [];
-  const stateAt = i => {
-    for (let k = states.length; k <= i; k++) states[k] = { ...(states[k - 1] || {}), ...frames[k].d };
-    return states[i];
-  };
+function show(app, saved, meta) {
+  const P = saved.players || {}, events = saved.events || [], single = !events.length;
+  const name = id => P[id] ? `<b class="so-name" style="--c:${esc(P[id].color || "#555")}">${esc(P[id].nick)}</b>` : "?";
+  const rich = t => esc(t).replace(/@([A-Za-z0-9_-]+)/g, (m, id) => P[id] ? name(id) : m);
+  const boardHtml = b => b ? `<ul class="so-board">${Object.entries(b).map(([id, v]) => `<li>${avatar(P[id]?.color || "#555", P[id]?.nick)}<span><b>${esc(P[id]?.nick || "?")}</b><small>${esc(v)}</small></span></li>`).join("")}</ul>` : "";
+  const finalHtml = () => saved.final ? `<section class="so-final"><div class="so-label">${esc(saved.final.title || "Résultat")}</div>
+    <ol class="so-rank">${(saved.final.rows || []).map((r, i) => `<li><span class="so-pos">${i + 1}</span>${avatar(P[r.who]?.color || "#555", P[r.who]?.nick)}<span class="so-mname">${esc(P[r.who]?.nick || "?")}<small>${esc(r.text)}</small></span></li>`).join("")}</ol></section>` : "";
+  const head = `<header class="so-rhead"><div class="so-label">${single ? "Résultat" : "Revoir"} · ${when(meta.at)}</div><h1 class="so-rtitle">${esc(GAMES[saved.game] || "")}</h1>
+    <div class="so-chips">${Object.entries(P).map(([id, p]) => `<span class="so-chip">${avatar(p.color || "#555", p.nick)}${esc(p.nick)}</span>`).join("")}</div></header>`;
+  document.body.classList.add("so-has-bar");
+
+  if (single) {
+    app.innerHTML = head + boardHtml(saved.board) + finalHtml();
+    const ctl = document.createElement("div");
+    ctl.className = "so-bar so-player";
+    ctl.innerHTML = `<div class="so-bar-in"><span class="so-bar-txt"><b>Résultat</b> · ${esc(GAMES[saved.game] || "")} · ${when(meta.at)}</span><a class="so-btn so-sm so-ghost" href="${ROOT.href}">Quitter</a></div>`;
+    document.body.appendChild(ctl);
+    return;
+  }
+
   let i = 0, timer = null;
+  const boards = []; let cur = null;
+  events.forEach((e, k) => { if (e.board) cur = e.board; boards[k] = cur; });
+  app.innerHTML = head + `<div class="so-rboard"></div><ol class="so-log"></ol><div class="so-rfinal"></div>`;
+  const logEl = app.querySelector(".so-log"), boardEl = app.querySelector(".so-rboard"), finalEl = app.querySelector(".so-rfinal");
+  logEl.innerHTML = events.map((e, k) => `<li data-k="${k}" class="${e.head ? "so-lh" : ""} ${e.tone ? "so-t-" + esc(e.tone) : ""}" hidden>${e.head ? `<span class="so-lhead">${rich(e.head)}</span>` : ""}${e.text ? `<span class="so-ltext">${rich(e.text)}</span>` : ""}</li>`).join("");
+  const items = [...logEl.children];
   const ctl = document.createElement("div");
   ctl.className = "so-bar so-player";
   document.body.appendChild(ctl);
-  document.body.classList.add("so-has-bar");
-  const show = n => {
-    i = Math.max(0, Math.min(frames.length - 1, n));
-    Object.assign(M, stateAt(i), { mode: "room", tv: false, me: saved.me, err: "", flash: "" });
-    try { render(); } catch (e) { console.error(e); }
+
+  const step = n => {
+    i = Math.max(0, Math.min(events.length - 1, n));
+    items.forEach((li, k) => { li.hidden = k > i; li.classList.toggle("so-cur", k === i); });
+    boardEl.innerHTML = boardHtml(boards[i]);
+    finalEl.innerHTML = i === events.length - 1 ? finalHtml() : "";
+    items[i]?.scrollIntoView({ block: "nearest", behavior: timer ? "smooth" : "auto" });
     draw();
   };
   const stop = () => { clearTimeout(timer); timer = null; };
   const tick = () => {
-    if (i >= frames.length - 1) { stop(); draw(); return; }
-    const gap = Math.min(2500, Math.max(350, frames[i + 1].t - frames[i].t));
-    timer = setTimeout(() => { show(i + 1); if (timer) tick(); }, gap);
+    if (i >= events.length - 1) { stop(); draw(); return; }
+    timer = setTimeout(() => { step(i + 1); if (timer) tick(); }, events[i + 1]?.head ? 1600 : 1200);
   };
-  const single = frames.length === 1;
   function draw() {
     ctl.innerHTML = `<div class="so-bar-in">
-      <span class="so-bar-txt"><b>${single ? "Résultat" : "Revoir"}</b> · ${esc(GAMES[saved.game] || "")} · ${when(meta.at)}${single ? "" : ` · ${i + 1}/${frames.length}`}</span>
-      ${single ? "" : `<div class="so-bar-acts">
+      <span class="so-bar-txt"><b>Revoir</b> · ${esc(GAMES[saved.game] || "")} · ${i + 1}/${events.length}</span>
+      <div class="so-bar-acts">
         <button class="so-btn so-sm" data-p="first" aria-label="Début">⏮</button>
         <button class="so-btn so-sm" data-p="prev" aria-label="Précédent">◀</button>
         <button class="so-btn so-sm so-primary" data-p="play" aria-label="${timer ? "Pause" : "Lecture"}">${timer ? "⏸" : "▶"}</button>
         <button class="so-btn so-sm" data-p="next" aria-label="Suivant">▶|</button>
         <button class="so-btn so-sm" data-p="last" aria-label="Fin">⏭</button>
       </div>
-      <input class="so-range" type="range" min="0" max="${frames.length - 1}" value="${i}" aria-label="Moment de la partie">`}
+      <input class="so-range" type="range" min="0" max="${events.length - 1}" value="${i}" aria-label="Moment de la partie">
       <a class="so-btn so-sm so-ghost" href="${ROOT.href}">Quitter</a>
     </div>`;
   }
   ctl.addEventListener("click", e => {
     const p = e.target.closest("[data-p]")?.dataset.p;
     if (!p) return;
-    if (p === "play") { if (timer) stop(); else { if (i >= frames.length - 1) show(0); tick(); } draw(); return; }
+    if (p === "play") { if (timer) stop(); else { if (i >= events.length - 1) step(0); tick(); } draw(); return; }
     stop();
-    show({ first: 0, prev: i - 1, next: i + 1, last: frames.length - 1 }[p]);
+    step({ first: 0, prev: i - 1, next: i + 1, last: events.length - 1 }[p]);
   });
-  ctl.addEventListener("input", e => { if (e.target.classList.contains("so-range")) { stop(); show(Number(e.target.value)); } });
-  show(0);
+  ctl.addEventListener("input", e => { if (e.target.classList.contains("so-range")) { stop(); step(Number(e.target.value)); } });
+  step(0);
 }
 
-// Local testing helpers (never on the real site): inspect the recording, pretend to be logged in.
+// Local testing helpers (never on the real site): read a game's journal, pretend to be logged in.
 if (DEV) window.soireeDev = {
-  recording: () => rec && { v: 1, game: GAME, me: rec.me, frames: rec.frames },
+  journal: () => { const j = journal(); return { v: 2, game: GAME, me: lastM?.me, ...j }; },
+  state: () => lastM,   // the game's own state object (tests fill it with a sample game, then read the journal)
   fakeAccount(a) { account = a; drawHubButton(); drawParty(); if (dlg?.open) drawAccount(); },
   ui
 };

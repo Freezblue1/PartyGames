@@ -325,7 +325,7 @@ async function cleanupOldRooms() {
 function profile() {
   return { color: null, games: 0, wins: 0, received: 0, votedFor: {}, titles: {}, recorded: [], ...store.json("profile", {}) };
 }
-function saveProfile(p) { store.set("profile", JSON.stringify(p)); }
+function saveProfile(p) { store.set("profile", JSON.stringify(p)); Soiree.statsSaved(p); }  // also kept in the account
 function recordGame(gameId, players, rounds, titles) {
   const p = profile();
   if (!gameId || p.recorded.includes(gameId) || !players.some(x => x.id === M.me) || !rounds.length) return;
@@ -1317,6 +1317,7 @@ async function boot() {
     M.me = u.uid;
     await Soiree.start().catch(() => null);
     if (Soiree.pseudo()) M.drafts.nick = Soiree.pseudo();
+    await Soiree.syncStats(store).catch(() => {});  // stats follow the account across devices
   }
   catch (e) {
     M.mode = "fatal";
@@ -1347,6 +1348,32 @@ async function boot() {
   M.mode = "home"; render();
   setTimeout(cleanupOldRooms, 8000);
 }
-// Shared layer (account button, own name, group, recording for replays): after every render.
+/* ---------- replay journal ----------
+   What happened, in words, rebuilt from the game's own history when a game is saved.
+   "@id" marks a player: the replay shows their name in their colour. A `board` is the score line after that moment. */
+Soiree.setJournal(() => {
+  const r = M.room;
+  if (!r?.gameId || !(r.deck || []).length) return null;
+  const players = Object.fromEntries(M.players.map(p => [p.id, { nick: p.nick, color: p.color }]));
+  const wins = Object.fromEntries(M.players.map(p => [p.id, 0]));
+  const board = () => Object.fromEntries(Object.entries(wins).map(([id, n]) => [id, plural(n, "verdict")]));
+  const events = [{ text: `${plural(M.players.length, "joueur")} autour de la table.`, board: board() }];
+  const deck = r.deck, last = Math.min(r.round || 0, deck.length), skipped = new Set(r.skipped || []);
+  for (let i = 1; i <= last; i++) {
+    if (i === r.round && r.revealed !== i && !skipped.has(i)) break;  // the question still open when the game stopped
+    events.push({ head: `Question ${i}`, text: `« ${deck[i - 1].t} »` });
+    if (skipped.has(i)) { events.push({ text: "Question passée." }); continue; }
+    // Votes are secret: only the owner's own vote is told, and the verdict everybody saw.
+    const vm = votesMap(i);
+    if (vm[M.me]) events.push({ text: `@${M.me} vote pour @${vm[M.me]}.` });
+    const { winners } = tally(M.players, vm);
+    winners.forEach(w => { wins[w.p.id]++; });
+    events.push({ text: winners.length ? `Verdict : ${winners.map(w => "@" + w.p.id).join(" et ")} (${plural(winners[0].n, "vote")}).` : "Personne n'a voté.", tone: "win", board: board() });
+  }
+  const sorted = Object.keys(wins).sort((a, b) => wins[b] - wins[a]);
+  return { players, events, final: { title: "Palmarès", rows: sorted.map(id => ({ who: id, text: plural(wins[id], "verdict") })) } };
+});
+
+// Shared layer (account button, own name, group, end-of-game save bar): after every render.
 { const draw = render; render = () => { draw(); Soiree.frame(M); }; }
 boot();

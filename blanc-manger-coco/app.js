@@ -536,7 +536,7 @@ async function cleanupOldRooms() {
 function profile() {
   return { color: null, games: 0, wins: 0, rounds: 0, titles: {}, lines: {}, recorded: [], ...store.json("profile", {}) };
 }
-function saveProfile(p) { store.set("profile", JSON.stringify(p)); }
+function saveProfile(p) { store.set("profile", JSON.stringify(p)); Soiree.statsSaved(p); }  // also kept in the account
 function recordGame(gameId, ids, scores, hist, titles) {
   const p = profile();
   if (!gameId || p.recorded.includes(gameId) || !ids.includes(M.me) || !hist.length) return;
@@ -1662,6 +1662,7 @@ async function boot() {
     M.me = u.uid;
     await Soiree.start().catch(() => null);
     if (Soiree.pseudo()) M.drafts.nick = Soiree.pseudo();
+    await Soiree.syncStats(store).catch(() => {});  // stats follow the account across devices
   }
   catch (e) {
     M.mode = "fatal";
@@ -1692,6 +1693,31 @@ async function boot() {
   M.mode = "home"; render();
   setTimeout(cleanupOldRooms, 8000);
 }
-// Shared layer (account button, own name, group, recording for replays): after every render.
+/* ---------- replay journal ----------
+   What happened, in words, rebuilt from the game's own history when a game is saved.
+   "@id" marks a player: the replay shows their name in their colour. A `board` is the score line after that moment. */
+Soiree.setJournal(() => {
+  const ord = i => `${i + 1}${i ? "e" : "er"}`;
+  const r = M.room;
+  if (!r?.gameId) return null;
+  const ids = scoreIds(r);
+  if (!ids.length) return null;
+  const players = Object.fromEntries(ids.map(id => { const p = pInfo(id); return [id, { nick: p.nick, color: p.color }]; }));
+  const sc = Object.fromEntries(ids.map(id => [id, 0]));
+  const board = () => Object.fromEntries(ids.map(id => [id, plural(sc[id] || 0, "point")]));
+  const events = [{ text: `${plural(ids.length, "joueur")}, une main de cartes chacun.`, board: board() }];
+  (r.history || []).forEach((h, i) => {
+    const q = h.q?.t || "";
+    events.push({ head: `Manche ${i + 1}`, text: `« ${fillText(q)} »${h.j ? ` · juge : @${h.j}` : ""}` });
+    for (const s of h.subs || []) events.push({ text: `@${s.u} : « ${fillText(q, s.c || [])} »${h.j ? "" : ` · ${s.n || 0} voix`}` });
+    if ((h.m || []).length) events.push({ text: `${h.m.map(u => "@" + u).join(", ")} ${h.m.length > 1 ? "n'ont" : "n'a"} pas joué.` });
+    (h.w || []).forEach(u => { sc[u] = (sc[u] || 0) + 1; });
+    events.push({ text: (h.w || []).length ? `Point pour ${h.w.map(u => "@" + u).join(" et ")}.` : "Personne ne marque.", tone: "win", board: board() });
+  });
+  const end = r.scores || {}, sorted = ids.slice().sort((a, b) => (end[b] || 0) - (end[a] || 0));
+  return { players, events, final: { title: "Classement", rows: sorted.map((id, i) => ({ who: id, text: `${ord(i)} · ${plural(end[id] || 0, "point")}` })) } };
+});
+
+// Shared layer (account button, own name, group, end-of-game save bar): after every render.
 { const draw = render; render = () => { draw(); Soiree.frame(M); }; }
 boot();

@@ -411,7 +411,7 @@ function profile() {
   p.roles = { civ: 0, uc: 0, white: 0, ...p.roles };
   return p;
 }
-function saveProfile(p) { store.set("profile", JSON.stringify(p)); }
+function saveProfile(p) { store.set("profile", JSON.stringify(p)); Soiree.statsSaved(p); }  // also kept in the account
 function recordGame(r, titles) {
   const res = r.result || {}, role = res.roles?.[M.me];
   if (!role || !res.winner || !r.gameId) return;
@@ -1420,6 +1420,7 @@ async function boot() {
     M.me = u.uid;
     await Soiree.start().catch(() => null);
     if (Soiree.pseudo()) M.drafts.nick = Soiree.pseudo();
+    await Soiree.syncStats(store).catch(() => {});  // stats follow the account across devices
   }
   catch (e) {
     M.mode = "fatal";
@@ -1450,6 +1451,42 @@ async function boot() {
   }
   M.mode = "home"; render();
 }
-// Shared layer (account button, own name, group, recording for replays): after every render.
+/* ---------- replay journal ----------
+   What happened, in words, rebuilt from the game's own history when a game is saved.
+   "@id" marks a player: the replay shows their name in their colour. A `board` is the score line after that moment. */
+Soiree.setJournal(() => {
+  const r = M.room;
+  if (!r?.gameId || !(r.order || []).length) return null;
+  const order = r.order, res = r.result || {}, roles = res.roles || {}, outs = r.out || [];
+  const players = Object.fromEntries(order.map(id => { const p = pInfo(id); return [id, { nick: p.nick, color: p.color }]; }));
+  const outRole = Object.fromEntries(outs.map(o => [o.uid, o.role])), alive = new Set(order);
+  const board = () => Object.fromEntries(order.map(id => [id, alive.has(id) ? "en jeu" : "éliminé · " + (ROLES[outRole[id]] || "?")]));
+  const who = role => role === "white" ? "Mr White" : role === "uc" ? "l'Undercover" : "un civil";
+  const events = [{ text: `${plural(order.length, "joueur")} : chacun a reçu un mot secret.`, board: board() }];
+  const rounds = Math.max(r.round || 0, 0, ...outs.map(o => o.round || 0));
+  for (let n = 1; n <= rounds; n++) {
+    const clues = M.clues.filter(c => c.round === n).sort((a, b) => (a.at || 0) - (b.at || 0));
+    const votes = M.votes.filter(v => v.round === n), gone = outs.filter(o => o.round === n);
+    if (!clues.length && !votes.length && !gone.length) continue;
+    events.push({ head: `Tour ${n}`, text: clues.length ? "Les indices :" : r.oral ? "Indices donnés à voix haute." : "" });
+    for (const c of clues) events.push({ text: `@${c.uid} : « ${c.text} »` });
+    if (votes.length) {
+      const lastVote = Math.max(...votes.map(v => v.v || 1)), count = {};
+      votes.filter(v => (v.v || 1) === lastVote).forEach(v => { count[v.target] = (count[v.target] || 0) + 1; });
+      events.push({ text: "Vote : " + Object.entries(count).sort((a, b) => b[1] - a[1]).map(([id, k]) => `@${id} (${k})`).join(", ") + "." });
+    }
+    for (const o of gone) {
+      alive.delete(o.uid);
+      events.push({ text: `@${o.uid} est éliminé : c'était ${who(o.role)}.`, tone: o.role === "civ" ? "lose" : "win", board: board() });
+    }
+  }
+  if (r.news?.guess) events.push({ text: `Mr White propose « ${r.news.guess} » : ${r.news.ok ? "c'est le mot des civils !" : "raté."}` });
+  if (res.civ) events.push({ head: "Les mots", text: `Civils : « ${res.civ} »${res.uc ? ` · Undercover : « ${res.uc} »` : ""}` });
+  const [title, sub] = WIN_TEXT[res.winner || ""] || WIN_TEXT[""];
+  events.push({ text: `${title}. ${sub}`, tone: "win" });
+  return { players, events, final: { title, rows: order.map(id => ({ who: id, text: `${ROLES[roles[id]] || "?"}${isWinner(roles[id], res.winner) ? " · gagnant" : ""}` })) } };
+});
+
+// Shared layer (account button, own name, group, end-of-game save bar): after every render.
 { const draw = render; render = () => { draw(); Soiree.frame(M); }; }
 boot();

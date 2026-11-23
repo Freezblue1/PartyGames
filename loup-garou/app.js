@@ -416,7 +416,7 @@ function profile() {
   p.roles = { ...p.roles };
   return p;
 }
-function saveProfile(p) { store.set("profile", JSON.stringify(p)); }
+function saveProfile(p) { store.set("profile", JSON.stringify(p)); Soiree.statsSaved(p); }  // also kept in the account
 function recordGame(r, titles) {
   const res = r.result || {}, role = res.roles?.[M.me];
   if (!role || !res.winner || res.winner === "none" || !r.gameId) return;
@@ -2169,6 +2169,7 @@ async function boot() {
     M.me = u.uid;
     await Soiree.start().catch(() => null);
     if (Soiree.pseudo()) M.drafts.nick = Soiree.pseudo();
+    await Soiree.syncStats(store).catch(() => {});  // stats follow the account across devices
   }
   catch (e) {
     M.mode = "fatal";
@@ -2199,6 +2200,28 @@ async function boot() {
   }
   M.mode = "home"; render();
 }
-// Shared layer (account button, own name, group, recording for replays): after every render.
+/* ---------- replay journal ----------
+   What happened, in words, rebuilt from the game's own history when a game is saved.
+   "@id" marks a player: the replay shows their name in their colour. A `board` is the score line after that moment. */
+Soiree.setJournal(() => {
+  const r = M.room, res = r?.result || {};
+  if (!r?.gameId) return null;
+  const roles = res.roles || {}, ids = [...new Set([...(r.order || []), ...Object.keys(roles)])];
+  if (!ids.length) return null;
+  const players = Object.fromEntries(ids.map(id => { const p = pInfo(id); return [id, { nick: p.nick, color: p.color }]; }));
+  // The village's own story (the recap of the end screen): "@id" stays a player, "%role" becomes the role.
+  const piece = x => x.startsWith("%") ? `${ROLES[x.slice(1)]?.icon || ""} ${roleName(x.slice(1))}`.trim() : x;
+  const events = [{ text: `${plural(ids.length, "joueur")} au village. La nuit tombe…` }];
+  if (r.recapFor === r.gameId) for (const s of r.recap || []) {
+    events.push({ head: s.t });
+    for (const l of s.l || []) events.push({ text: l.map(piece).join("") });
+  }
+  const [title, sub] = WIN_TEXT[res.winner || ""] || WIN_TEXT[""];
+  events.push({ text: `${title} ${sub}`, tone: "win" });
+  const dead = new Set((r.out || []).map(o => o.uid));
+  return { players, events, final: { title, rows: ids.map(id => ({ who: id, text: `${roleName(roles[id])} · ${dead.has(id) ? "mort" : "vivant"}` })) } };
+});
+
+// Shared layer (account button, own name, group, end-of-game save bar): after every render.
 { const draw = render; render = () => { draw(); Soiree.frame(M); }; }
 boot();

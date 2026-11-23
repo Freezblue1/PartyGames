@@ -611,7 +611,7 @@ async function cleanupOldRooms() {
 function profile() {
   return { color: null, games: 0, wins: 0, found: 0, best: 0, questions: 0, titles: {}, persos: [], recorded: [], ...store.json("profile", {}) };
 }
-function saveProfile(p) { store.set("profile", JSON.stringify(p)); }
+function saveProfile(p) { store.set("profile", JSON.stringify(p)); Soiree.statsSaved(p); }  // also kept in the account
 function recordGame(gameId, ids, found, hist, titles) {
   const p = profile();
   if (!gameId || p.recorded.includes(gameId) || !ids.includes(M.me) || !hist.length) return;
@@ -1795,6 +1795,7 @@ async function boot() {
     M.me = u.uid;
     await Soiree.start().catch(() => null);
     if (Soiree.pseudo()) M.drafts.nick = Soiree.pseudo();
+    await Soiree.syncStats(store).catch(() => {});  // stats follow the account across devices
   }
   catch (e) {
     M.mode = "fatal";
@@ -1825,6 +1826,32 @@ async function boot() {
   M.mode = "home"; render();
   setTimeout(cleanupOldRooms, 8000);
 }
-// Shared layer (account button, own name, group, recording for replays): after every render.
+/* ---------- replay journal ----------
+   What happened, in words, rebuilt from the game's own history when a game is saved.
+   "@id" marks a player: the replay shows their name in their colour. A `board` is the score line after that moment. */
+Soiree.setJournal(() => {
+  const ord = i => `${i + 1}${i ? "e" : "er"}`;
+  const r = M.room;
+  if (!r?.gameId || !(r.order || []).length) return null;
+  const order = r.order, found = new Set();
+  const players = Object.fromEntries(order.map(id => { const p = pInfo(id); return [id, { nick: p.nick, color: p.color }]; }));
+  const card = id => M.cards[id]?.name || "?";
+  const board = () => Object.fromEntries(order.map(id => [id, found.has(id) ? "✓ " + card(id) : "cherche…"]));
+  const events = [{ text: `${plural(order.length, "joueur")}, un post-it sur le front chacun.`, board: board() }];
+  for (const h of r.history || []) {
+    if (h.k === "g") {
+      const ok = h.r === "ok";
+      if (ok) found.add(h.u);
+      events.push({ text: `@${h.u} propose « ${h.t || "à l'oral"} » : ${ok ? `trouvé ! C'était ${card(h.u)}.` : "raté."}`, tone: ok ? "win" : "lose", ...(ok ? { board: board() } : {}) });
+    } else {
+      const counts = h.y || h.n || h.i ? ` (${h.y || 0} oui, ${h.n || 0} non${h.i ? `, ${h.i} ça dépend` : ""})` : "";
+      events.push({ text: `@${h.u} demande « ${h.t || "à l'oral"} » → ${RES[h.r] || "?"}${counts}.` });
+    }
+  }
+  const got = r.found || [], rank = ranking(order, got, r.history || []);
+  return { players, events, final: { title: "Classement", rows: rank.map((id, i) => ({ who: id, text: `${got.includes(id) ? ord(i) + " à trouver" : "n'a pas trouvé"} · ${card(id)}` })) } };
+});
+
+// Shared layer (account button, own name, group, end-of-game save bar): after every render.
 { const draw = render; render = () => { draw(); Soiree.frame(M); }; }
 boot();

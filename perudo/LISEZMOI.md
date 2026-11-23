@@ -36,7 +36,7 @@ Personne n'a besoin de créer de compte pour jouer.
 - À la fin : le classement, un **titre** pour chacun (Roi du calza, Kamikaze, Détecteur de mensonges, Poker face…), le détail de ses coups, et un bouton pour **partager le classement en image** avec le coup de la soirée.
 - **Grand écran** : dans « Code de la partie », le modo trouve un lien à ouvrir sur une TV ou un ordi. Il montre la table, les annonces et les gobelets soulevés, jamais les dés cachés.
 - **Passer la main** : le modo peut donner son rôle à quelqu'un d'autre, même en pleine partie. S'il perd la connexion plus d'une minute, les autres peuvent **devenir le modo** et la partie continue.
-- **Mon profil** (sur l'accueil du jeu) : tes stats gardées sur ton téléphone (parties, victoires, dudos gagnants, calzas, ta valeur fétiche, ton titre fétiche).
+- **Mon profil** (sur l'accueil du jeu) : tes stats (sur ce téléphone, et dans ton compte si tu es connecté) (parties, victoires, dudos gagnants, calzas, ta valeur fétiche, ton titre fétiche).
 - **Installer l'appli** : bouton sur l'accueil (Android), ou Partager › « Sur l'écran d'accueil » (iPhone).
 - Les parties créées sur ton téléphone et inutilisées depuis 24 h sont supprimées toutes seules de Firebase.
 - Pas de réseau ? **Jouer à plusieurs sur un seul téléphone** : le téléphone passe de main en main, chacun regarde ses dés à son tour.

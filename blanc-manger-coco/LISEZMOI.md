@@ -46,7 +46,7 @@ la majuscule est ajoutée toute seule quand la réponse ouvre la phrase.
 - À la fin : le classement, un **titre** pour chacun (Roi de la vanne, Chouchou d'Alice, Génie incompris…), les phrases gagnantes de chacun, et un bouton pour **partager le palmarès en image**.
 - **Grand écran** : dans « Code de la partie », le modo trouve un lien à ouvrir sur une TV ou un ordi. Il montre la question, les réponses à lire et les scores, jamais les mains.
 - **Passer la main** : le modo peut donner son rôle à quelqu'un d'autre, même en pleine partie. S'il perd la connexion plus d'une minute, les autres peuvent **devenir le modo** et la partie continue.
-- **Mon profil** (sur l'accueil du jeu) : tes stats gardées sur ton téléphone (parties, victoires, manches gagnées, ta carte qui gagne le plus, ton titre fétiche).
+- **Mon profil** (sur l'accueil du jeu) : tes stats (sur ce téléphone, et dans ton compte si tu es connecté) (parties, victoires, manches gagnées, ta carte qui gagne le plus, ton titre fétiche).
 - **Installer l'appli** : bouton sur l'accueil (Android), ou Partager › « Sur l'écran d'accueil » (iPhone).
 - Les parties créées sur ton téléphone et inutilisées depuis 24 h sont supprimées toutes seules de Firebase.
 - Pas de réseau ? **Jouer à plusieurs sur un seul téléphone** : le téléphone passe de main en main, avec un juge à chaque manche.
